@@ -3,7 +3,7 @@ import warnings
 import random
 
 from mpi4py import MPI
-from calculations import calculate_distance_pbc, calculate_fene_potential, calculate_lj_potential
+from .calculations import calculate_distance_pbc, calculate_fene_potential, calculate_lj_potential
 
 
 def perform_bond_exchange(sticker_neighbor_list: dict, 

@@ -3,7 +3,7 @@ import numpy as np
 
 from mpi4py import MPI
 
-from calculations import calculate_distance_pbc
+from .calculations import calculate_distance_pbc
 
 
 def _calculate_subdomain_boundaries(box_dims: np.ndarray,
