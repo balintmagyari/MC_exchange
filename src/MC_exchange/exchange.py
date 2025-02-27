@@ -107,7 +107,8 @@ def perform_bond_exchange(sticker_neighbor_list: dict,
                 continue
 
             if atom_c == atom_d:
-                warnings.warn('Atom C and Atom D are identical!!!')
+                continue
+                # warnings.warn('Atom C and Atom D are identical!!!')
 
             # -------------------- Exchange is considered from this point onwards --------------------
 
