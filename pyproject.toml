@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling", "lammps", "mpi4py", "numpy"]
+requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
@@ -11,6 +11,11 @@ authors = [
 description = "MC Bond Exchange for LAMMPS Simulations"
 readme = "README.md"
 requires-python = ">=3.12"
+dependencies = [
+  "lammps",
+  "mpi4py",
+  "numpy"
+]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Operating System :: OS Independent",
