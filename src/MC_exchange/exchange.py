@@ -247,8 +247,10 @@ def perform_bond_exchange(sticker_neighbor_list: dict,
             delta_U = U_new - U_old
 
             # Acceptance probability. If change in potential is negative, the acceptance probability automatically becomes 1.0.
-            # TODO: Revise below statement. At the moment P_accept=1 if T=0, which might be unrealistic.
-            P_accept = np.exp(-delta_U/(kB * T)) if (delta_U > 0 and T != 0) else 1.0
+            if T != 0:
+                P_accept = np.exp(-delta_U/(kB * T)) if delta_U > 0 else 1.0
+            else:
+                P_accept = 0
 
             bond_exchange = False
             if P_accept == 1:
