@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "MC_exchange"
-version = "0.0.4"
+version = "0.0.5"
 authors = [
   {name="Balint Magyari", email="balint.magyari@unina.it"},
 ]
