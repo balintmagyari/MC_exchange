@@ -14,6 +14,7 @@ def perform_bond_exchange(sticker_neighbor_list: dict,
                           box_dims: np.ndarray,
                           T: float,
                           cut_off: float | None = None,
+                          alpha: float = 1.0,
                           P_coeff: float = 1.0,
                           kB: float = 1.0,
                           comm: MPI.Intracomm = MPI.COMM_WORLD,
@@ -40,6 +41,8 @@ def perform_bond_exchange(sticker_neighbor_list: dict,
     cut_off : float | None
         Cut-off distance for bond exchange dynamics to be considered. If None, the cut-off distance from the
         neighbor list is used. Default is None.
+    alpha : float
+        Arbitrary parameter used to control the energy barrier, similar to the role of a catalyst during a chemical reaction.
     P_coeff : float
         Defines the maximum of the range between 0 and P_coeff, from which a random number is drawn during the
         Monte Carlo exchange. Default is 1.0.
@@ -244,7 +247,7 @@ def perform_bond_exchange(sticker_neighbor_list: dict,
 
             U_new = min(U_new_1, U_new_2)
 
-            delta_U = U_new - U_old
+            delta_U = alpha * (U_new - U_old)               # Change in potential, adjusted by alpha
 
             # Acceptance probability. If change in potential is negative, the acceptance probability automatically becomes 1.0.
             if T != 0:
