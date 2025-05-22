@@ -10,14 +10,26 @@ def calculate_distance_pbc(box_dims: np.ndarray,
     """
     Calculates distance between two atoms, while also adjusting for periodic boundary conditions.
 
-    Args:
-        box_dims (): box dimensions read from LAMMPS data file.
-        atom_1_x (float): x-coordinate of atom 1.
-        atom_1_y (float): y-coordinate of atom 1.
-        atom_1_z (float): z-coordinate of atom 1.
-        atom_2_x (float): x-coordinate of atom 2.
-        atom_2_y (float): y-coordinate of atom 2.
-        atom_2_z (float): z-coordinate of atom 2.
+    Parameters
+    ----------
+    box_dims : np.ndarray
+        box dimensions read from LAMMPS data file.
+    atom_1_x : float | np.ndarray
+        x-coordinate of atom 1.
+    atom_1_y : float | np.ndarray
+        y-coordinate of atom 1.
+    atom_1_z : float | np.ndarray
+        z-coordinate of atom 1.
+    atom_2_x : float | np.ndarray
+        x-coordinate of atom 2.
+    atom_2_y : float | np.ndarray
+        y-coordinate of atom 2.
+    atom_2_z : float | np.ndarray
+        z-coordinate of atom 2.
+
+    Returns
+    ----------
+    float : distance between the two atoms.
     """
     if isinstance(atom_1_x, np.ndarray):
         atom_1_x = atom_1_x.item()
