@@ -124,7 +124,7 @@ def gather_bonds(lmp,
 def gather_atoms(lmp, 
                  atom_type: int | list[int] | None = None,
                  comm = MPI.COMM_WORLD,
-                 root: int = 0) -> np.ndarray | None:
+                 root: int = 0) -> np.ndarray:
     """
     Extracts atom information from each processor, combines the data into one structured numpy array and 
     broadcasts this array to all processes.
