@@ -19,7 +19,7 @@ def perform_bond_exchange(sticker_neighbor_list: dict,
                           kB: float = 1.0,
                           comm: MPI.Intracomm = MPI.COMM_WORLD,
                           return_stats: bool = False
-                          ) -> Union[tuple[dict, dict], tuple[dict, dict, int, int, int, int]]:
+                          ) -> tuple:
     """
     Evaluate bond exchange dynamics on the local process, gather combined data on which
     bonds to delete and create, and broadcast that combined data to all processes.
@@ -302,6 +302,8 @@ def perform_bond_exchange(sticker_neighbor_list: dict,
     
     mpi_rank = comm.Get_rank()
     if mpi_rank == 0:
+        assert gathered_bonds_to_delete is not None # For type checker
+        assert gathered_bonds_to_create is not None # For type checker
         complete_bonds_to_delete = {}
         complete_bonds_to_create = {}
 
@@ -311,8 +313,8 @@ def perform_bond_exchange(sticker_neighbor_list: dict,
         for d in gathered_bonds_to_create:
             complete_bonds_to_create.update(d)
     else:
-        complete_bonds_to_delete = None
-        complete_bonds_to_create = None
+        complete_bonds_to_delete = {}
+        complete_bonds_to_create = {}
 
         if return_stats:
             total_N_possible = None

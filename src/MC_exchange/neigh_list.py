@@ -236,11 +236,12 @@ def neigh_list(
             if neighbor_info:
                 neighbor_list[atom_id1] = neighbor_info
 
-    gathered_neigh_lists: list[dict] = comm.gather(neighbor_list, root=0)
+    gathered_neigh_lists: list[dict] | None = comm.gather(neighbor_list, root=0)
 
     mpi_rank = comm.Get_rank()
     if mpi_rank == 0:
         complete_neigh_list = {}
+        assert gathered_neigh_lists is not None
         for neigh_dict in gathered_neigh_lists:
             for key, inner_dict in neigh_dict.items():
                 # Merge nested dictionaries if key exists
@@ -255,7 +256,7 @@ def neigh_list(
         chunk_size = math.ceil(len(items) / num_chunks)
 
         # Create chunks as sub-dictionaries
-        scatter_list: list[dict] = [
+        scatter_list: list[dict] | None = [
             dict(items[i*chunk_size : (i+1)*chunk_size])
             for i in range(num_chunks)
         ]

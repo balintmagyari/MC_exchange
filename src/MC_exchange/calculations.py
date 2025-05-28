@@ -59,7 +59,7 @@ def calculate_distance_pbc(box_dims: np.ndarray,
 
     # Compute distance
     distance = np.linalg.norm(delta)
-    return distance
+    return float(distance)
 
 def calculate_fene_potential(distance: float,
                              K: float = 30.0, R0: float = 1.5, eps: float = 1.0, sigma: float = 1.0) -> float:

@@ -186,34 +186,37 @@ def gather_atoms(lmp,
     # Gather atom IDs
     comm.Gatherv(
         sendbuf=local_ids,
-        recvbuf=(global_ids, send_counts, displacements, MPI.INT64_T),
+        recvbuf=(global_ids, send_counts, displacements, MPI.INT64_T), # type: ignore
         root=root
     )
 
     # Gather atom types
     comm.Gatherv(
         sendbuf=local_types,
-        recvbuf=(global_types, send_counts, displacements, MPI.INT),
+        recvbuf=(global_types, send_counts, displacements, MPI.INT), # type: ignore
         root=root
     )
 
     # Gather molecules
     comm.Gatherv(
         sendbuf=local_mols,
-        recvbuf=(global_mols, send_counts, displacements, MPI.INT),
+        recvbuf=(global_mols, send_counts, displacements, MPI.INT), # type: ignore
         root=root
     )
 
     # Gather coordinates (flattened array)
     comm.Gatherv(
         sendbuf=local_x.ravel(),
-        recvbuf=(global_x, 3*send_counts if rank == 0 else None, 3*displacements if rank == 0 else None, MPI.DOUBLE),
+        recvbuf=(global_x, 3*send_counts if rank == 0 else None, 3*displacements if rank == 0 else None, MPI.DOUBLE), # type: ignore
         root=root
     )
 
     if rank == root:
-        # Sort all data by atom ID
-        sort_idx = np.argsort(global_ids)
+        assert global_ids is not None  # For type checker
+        assert global_x is not None  # For type checker
+        assert global_types is not None  # For type checker
+        assert global_mols is not None  # For type checker
+        sort_idx = np.argsort(global_ids) # Sort all data by atom ID
         
         # Reshape coordinates
         sorted_x = global_x.reshape(-1,3)[sort_idx]
