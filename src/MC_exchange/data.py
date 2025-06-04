@@ -59,7 +59,7 @@ def gather_bonds(lmp,
     Returns
     -------
     np.ndarray
-        Bond data.
+        Bond data with columns: [bond type | atom 1 | atom 2]
     """
     rank = comm.Get_rank()
 

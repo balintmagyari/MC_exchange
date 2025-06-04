@@ -1,11 +1,14 @@
 import numpy as np
 import warnings
 import random
+# import pandas as pd
+
+from itertools import combinations
 
 from typing import Union
 
 from mpi4py import MPI
-from .calculations import calculate_distance_pbc, calculate_fene_potential, calculate_lj_potential
+from .calculations import calculate_distance_pbc, calculate_fene_potential, calculate_lj_potential, calculate_raw_fene_potential
 
 
 def perform_bond_exchange(sticker_neighbor_list: dict, 
@@ -337,3 +340,204 @@ def perform_bond_exchange(sticker_neighbor_list: dict,
         return complete_bonds_to_delete, complete_bonds_to_create, total_N_possible, total_N_exchanges, total_N_deltaU_exchanges, total_N_MC_exchanges
     else:
         return complete_bonds_to_delete, complete_bonds_to_create
+    
+def three_four_atom_bond_exchange(sticker_neighbor_list: dict, 
+                          bonds: np.ndarray,
+                          atoms: np.ndarray,
+                        #   bonded_sticker_type: int,
+                        #   free_sticker_type: int,
+                          box_dims: np.ndarray,
+                          T: float,
+                          cut_off: float | None = None,
+                          alpha: float = 1.0,
+                          P_coeff: float = 1.0,
+                          kB: float = 1.0,
+                          comm: MPI.Intracomm = MPI.COMM_WORLD
+                          ) -> tuple:
+    """
+    Evaluate bond exchange dynamics on the local process, gather combined data on which
+    bonds to delete and create, and broadcast that combined data to all processes.
+
+    If return_stats = True, statistics about the number of exchanges is returned.
+
+    Parameters
+    ---------
+    sticker_neighbor_list : dict
+        Dictionary containing the local neighbor list on the current process.
+    bonds : np.ndarray
+        Bond data organized as a structured numpy array with columns: ['type', 'atom 1', 'atom 2'].
+    atoms : np.ndarray
+        Atom data organized as a structured numpy array with columns: ['id', 'type', 'mol', 'x', 'y', 'z'].
+    box_dims : np.ndarray
+        Box dimensions in the form: [xlo, xhi, ylo, yhi, zlo, zhi].
+    T : float
+        Current temperature of the simulation.
+    cut_off : float | None
+        Cut-off distance for bond exchange dynamics to be considered. If None, the cut-off distance from the
+        neighbor list is used. Default is None.
+    alpha : float
+        Arbitrary parameter used to control the energy barrier, similar to the role of a catalyst during a chemical reaction.
+    P_coeff : float
+        Defines the maximum of the range between 0 and P_coeff, from which a random number is drawn during the
+        Monte Carlo exchange. Default is 1.0.
+    kB : float
+        Boltzmann's constant. Default is 1.0.
+    comm : MPI.Intracomm 
+        MPI communicator. Default is MPI.COMM_WORLD.
+
+    Returns
+    -------
+    tuple[dict, dict] | tuple[dict, dict, int, int, int, int]
+
+    bonds_to_delete and bonds_to_create dictionaries are returned. 
+    """
+
+    already_exchanged_atoms = []    # List used to prevent the same pair of atoms taking part in bond exchange more than once
+    bonds_to_delete = {}            # Final dictionary containing atom1 and atom2 as key: value pairs between which bonds should be created after bond exchange
+    bonds_to_create = {}            # Final dictionary containing atom1 and atom2 as key: value pairs between which bonds should be created after bond exchange
+
+    for atom_main, neighbors_data in sticker_neighbor_list.items():
+        sticker_ids = []        # Combined list of sticker IDs, including atom_main
+        stopper_bond_exchange = False
+        paired_bond_exchange = False
+
+        if atom_main in already_exchanged_atoms:    # Skip to next iteration of atom_main has already been exchanged
+            continue
+
+        sticker_ids.append(atom_main)
+        for neighbor_id in neighbors_data.keys():
+            if neighbor_id in already_exchanged_atoms:      # Skip to next iteration of neighbor_id has already been exchanged
+                continue
+            if neighbor_id < atom_main:      # Avoid double counting
+                continue
+            sticker_ids.append(neighbor_id)
+
+        n_stickers = len(sticker_ids)
+
+        # Continue with next iteration if the total number of stickers (including atom_main) is not enough for BER.
+        if n_stickers < 3:
+            continue
+
+        linked_pairs = []
+        for id1, id2 in combinations(sticker_ids, 2):
+            if np.any(
+                ((bonds['atom 1'] == id1) & (bonds['atom 2'] == id2)) |
+                ((bonds['atom 1'] == id2) & (bonds['atom 2'] == id1))
+            ):
+                linked_pairs.append((id1, id2))
+
+        if len(linked_pairs) == 0:      # Continue with next iteration of main loop if no pair is found
+            continue
+
+        if len(linked_pairs) == 1:      # Evaluate 3 sticker bond exchange if only 1 pair of sticker is linked
+            stopper_bond_exchange = True
+
+        if len(linked_pairs) > 1:       # Evaluate 4 sticker BER if two or more pairs of sticker is linked
+            paired_bond_exchange = True
+
+        if stopper_bond_exchange:
+            id1, id2 = linked_pairs[0]
+
+            # Saving coordinates of id1 and id2 atoms for later use
+            id1_data = atoms[atoms['id'] == id1]
+            id1_x = id1_data['x']; id1_y = id1_data['y']; id1_z = id1_data['z']
+            id2_data = atoms[atoms['id'] == id2]
+            id2_x = id2_data['x']; id2_y = id2_data['y']; id2_z = id2_data['z']
+
+            # Remove bonded sticker ids from sticker_ids list
+            sticker_ids.remove(id1); sticker_ids.remove(id2)
+
+            distances = {}
+            distances[f'{id1}-{id2}'] = calculate_distance_pbc(box_dims, id1_x, id1_y, id1_z, id2_x, id2_y, id2_z)
+            for free_sticker in sticker_ids:
+                # if id1 == atom_main:
+                #     distances[f'{id1}-{free_sticker}'] = neighbors_data[free_sticker]
+                # elif id2 == atom_main:
+                #     distances[f'{id2}-{free_sticker}'] = neighbors_data[free_sticker]
+                # elif free_sticker == atom_main:
+                #     distances[f'{id1}-{free_sticker}'] = neighbors_data[id1]
+                #     distances[f'{id2}-{free_sticker}'] = neighbors_data[id2]
+                # else:
+                free_sticker_data = atoms[atoms['id'] == free_sticker]
+                free_sticker_x = free_sticker_data['x']; free_sticker_y = free_sticker_data['y']; free_sticker_z = free_sticker_data['z']
+
+                distances[f'{id1}-{free_sticker}'] = calculate_distance_pbc(box_dims, id1_x, id1_y, id1_z, free_sticker_x, free_sticker_y, free_sticker_z)
+                distances[f'{id2}-{free_sticker}'] = calculate_distance_pbc(box_dims, id2_x, id2_y, id2_z, free_sticker_x, free_sticker_y, free_sticker_z)
+            
+            fene_old = calculate_raw_fene_potential(distances[f'{id1}-{id2}'])
+            new_fene_potentials = []        # FENE potentials of all possible NEW configurations
+            for free_sticker in sticker_ids:
+                potential1 = calculate_raw_fene_potential(distances[f'{id1}-{free_sticker}'])
+                potential2 = calculate_raw_fene_potential(distances[f'{id2}-{free_sticker}'])
+
+                new_fene_potentials.append([id1, free_sticker, potential1])
+                new_fene_potentials.append([id2, free_sticker, potential2])
+            
+            new_fene_potentials = np.array(new_fene_potentials)
+
+            min_row_idx = np.argmin(new_fene_potentials[:, 2])
+            min_row = new_fene_potentials[min_row_idx]
+            new_sticker1 = min_row[0]; new_sticker2 = min_row[1]; fene_new = min_row[2]
+
+            if np.isnan(fene_new):
+                delta_U = 10**10
+            else:
+                delta_U = alpha * (fene_new - fene_old)
+
+            # Acceptance probability. If change in potential is negative, the acceptance probability automatically becomes 1.0.
+            if T != 0:
+                P_accept = np.exp(-delta_U/(kB * T)) if delta_U > 0 else 1.0
+            else:
+                P_accept = 0
+
+            bond_exchange = False
+            if P_accept == 1:
+                bond_exchange = True
+                # print('Bond exchange happens naturally due to a negative delta U.')
+
+            else:
+                ran = random.uniform(0, P_coeff)
+                if P_accept >= ran:
+                    bond_exchange = True
+                    # print('Bond exchange happens due to Metropolis acceptance criterion.')
+
+            if bond_exchange:
+                bonds_to_delete[min(id1, id2)] = max(id1, id2)
+                bonds_to_create[min(new_sticker1, new_sticker2)] = max(new_sticker1, new_sticker2)
+
+                if new_sticker1 == id1:
+                    already_exchanged_atoms.append(id2)
+                elif new_sticker1 == id2:
+                    already_exchanged_atoms.append(id1)
+                else:
+                    warnings.warn('Something was messed up!')
+
+                already_exchanged_atoms.append(new_sticker1)
+                already_exchanged_atoms.append(new_sticker2)
+
+# -------------------- Gathering data from each process, combining them into one complete set of data and broadcasting it back to all processes--------------------
+
+    gathered_bonds_to_delete = comm.gather(bonds_to_delete, root=0)
+    gathered_bonds_to_create = comm.gather(bonds_to_create, root=0)
+
+    mpi_rank = comm.Get_rank()
+    if mpi_rank == 0:
+        assert gathered_bonds_to_delete is not None # For type checker
+        assert gathered_bonds_to_create is not None # For type checker
+        complete_bonds_to_delete = {}
+        complete_bonds_to_create = {}
+
+        for d in gathered_bonds_to_delete:
+            complete_bonds_to_delete.update(d)
+
+        for d in gathered_bonds_to_create:
+            complete_bonds_to_create.update(d)
+    else:
+        complete_bonds_to_delete = {}
+        complete_bonds_to_create = {}
+
+    # Broadcasting bonds to delete/create dictionaries
+    complete_bonds_to_delete = comm.bcast(complete_bonds_to_delete, root=0)
+    complete_bonds_to_create = comm.bcast(complete_bonds_to_create, root=0)
+
+    return complete_bonds_to_delete, complete_bonds_to_create
