@@ -502,6 +502,11 @@ def three_four_atom_bond_exchange(sticker_neighbor_list: dict,
                     # print('Bond exchange happens due to Metropolis acceptance criterion.')
 
             if bond_exchange:
+                id1 = int(id1)
+                id2 = int(id2)
+                new_sticker1 = int(new_sticker1)
+                new_sticker2 = int(new_sticker2)
+
                 bonds_to_delete[min(id1, id2)] = max(id1, id2)
                 bonds_to_create[min(new_sticker1, new_sticker2)] = max(new_sticker1, new_sticker2)
 
@@ -517,21 +522,35 @@ def three_four_atom_bond_exchange(sticker_neighbor_list: dict,
 
 # -------------------- Gathering data from each process, combining them into one complete set of data and broadcasting it back to all processes--------------------
 
-    gathered_bonds_to_delete = comm.gather(bonds_to_delete, root=0)
-    gathered_bonds_to_create = comm.gather(bonds_to_create, root=0)
+    bonds_to_delete_list = list(bonds_to_delete.items())
+    bonds_to_create_list = list(bonds_to_create.items())
+
+    gathered_bonds_to_delete = comm.gather(bonds_to_delete_list, root=0)
+    gathered_bonds_to_create = comm.gather(bonds_to_create_list, root=0)
 
     mpi_rank = comm.Get_rank()
     if mpi_rank == 0:
+        # Flatten lists
         assert gathered_bonds_to_delete is not None # For type checker
         assert gathered_bonds_to_create is not None # For type checker
-        complete_bonds_to_delete = {}
-        complete_bonds_to_create = {}
+        all_bonds_to_delete = [pair for sublist in gathered_bonds_to_delete for pair in sublist]
+        all_bonds_to_create = [pair for sublist in gathered_bonds_to_create for pair in sublist]
+        
+        # Conflict resolution: ensure each atom appears only once
+        used_atoms = set()
+        filtered_bonds_to_delete = []
+        filtered_bonds_to_create = []
 
-        for d in gathered_bonds_to_delete:
-            complete_bonds_to_delete.update(d)
+        for (a1, a2), (b1, b2) in zip(all_bonds_to_delete, all_bonds_to_create):
+            if a1 in used_atoms or a2 in used_atoms or b1 in used_atoms or b2 in used_atoms:
+                continue
+            filtered_bonds_to_delete.append((a1, a2))
+            filtered_bonds_to_create.append((b1, b2))
+            used_atoms.update([a1, a2, b1, b2])
 
-        for d in gathered_bonds_to_create:
-            complete_bonds_to_create.update(d)
+        # Convert back to dicts if needed
+        complete_bonds_to_delete = dict(filtered_bonds_to_delete)
+        complete_bonds_to_create = dict(filtered_bonds_to_create)
     else:
         complete_bonds_to_delete = {}
         complete_bonds_to_create = {}
