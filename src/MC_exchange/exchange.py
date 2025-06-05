@@ -344,14 +344,13 @@ def perform_bond_exchange(sticker_neighbor_list: dict,
 def three_four_atom_bond_exchange(sticker_neighbor_list: dict, 
                           bonds: np.ndarray,
                           atoms: np.ndarray,
-                        #   bonded_sticker_type: int,
-                        #   free_sticker_type: int,
                           box_dims: np.ndarray,
                           T: float,
-                          cut_off: float | None = None,
                           alpha: float = 1.0,
                           P_coeff: float = 1.0,
                           kB: float = 1.0,
+                          stopper_exchange: bool = True,
+                          double_bonded_exchange: bool = True,
                           comm: MPI.Intracomm = MPI.COMM_WORLD
                           ) -> tuple:
     """
@@ -372,9 +371,6 @@ def three_four_atom_bond_exchange(sticker_neighbor_list: dict,
         Box dimensions in the form: [xlo, xhi, ylo, yhi, zlo, zhi].
     T : float
         Current temperature of the simulation.
-    cut_off : float | None
-        Cut-off distance for bond exchange dynamics to be considered. If None, the cut-off distance from the
-        neighbor list is used. Default is None.
     alpha : float
         Arbitrary parameter used to control the energy barrier, similar to the role of a catalyst during a chemical reaction.
     P_coeff : float
@@ -392,7 +388,7 @@ def three_four_atom_bond_exchange(sticker_neighbor_list: dict,
     bonds_to_delete and bonds_to_create dictionaries are returned. 
     """
 
-    already_exchanged_atoms = []    # List used to prevent the same pair of atoms taking part in bond exchange more than once
+    already_exchanged_atoms = set()    # List used to prevent the same pair of atoms taking part in bond exchange more than once
     bonds_to_delete = {}            # Final dictionary containing atom1 and atom2 as key: value pairs between which bonds should be created after bond exchange
     bonds_to_create = {}            # Final dictionary containing atom1 and atom2 as key: value pairs between which bonds should be created after bond exchange
 
@@ -426,16 +422,22 @@ def three_four_atom_bond_exchange(sticker_neighbor_list: dict,
             ):
                 linked_pairs.append((id1, id2))
 
-        if len(linked_pairs) == 0:      # Continue with next iteration of main loop if no pair is found
+        n_pairs = len(linked_pairs)
+
+        if n_pairs == 0:      # Continue with next iteration of main loop if no pair is found
             continue
 
-        if len(linked_pairs) == 1:      # Evaluate 3 sticker bond exchange if only 1 pair of sticker is linked
+        if n_pairs == 1:      # Evaluate 3 sticker bond exchange if only 1 pair of sticker is linked
             stopper_bond_exchange = True
 
-        if len(linked_pairs) > 1:       # Evaluate 4 sticker BER if two or more pairs of sticker is linked
-            paired_bond_exchange = True
+        if n_pairs == 2:       # Evaluate 4 sticker BER if two pairs of sticker is linked
+            id1, id2 = linked_pairs[0]
+            id3, id4 = linked_pairs[1]
 
-        if stopper_bond_exchange:
+            if len({id1, id2, id3, id4}) == 4:
+                paired_bond_exchange = True
+        
+        if stopper_bond_exchange and stopper_exchange:
             id1, id2 = linked_pairs[0]
 
             # Saving coordinates of id1 and id2 atoms for later use
@@ -450,14 +452,10 @@ def three_four_atom_bond_exchange(sticker_neighbor_list: dict,
             distances = {}
             distances[f'{id1}-{id2}'] = calculate_distance_pbc(box_dims, id1_x, id1_y, id1_z, id2_x, id2_y, id2_z)
             for free_sticker in sticker_ids:
-                # if id1 == atom_main:
-                #     distances[f'{id1}-{free_sticker}'] = neighbors_data[free_sticker]
-                # elif id2 == atom_main:
-                #     distances[f'{id2}-{free_sticker}'] = neighbors_data[free_sticker]
-                # elif free_sticker == atom_main:
-                #     distances[f'{id1}-{free_sticker}'] = neighbors_data[id1]
-                #     distances[f'{id2}-{free_sticker}'] = neighbors_data[id2]
-                # else:
+
+                # if np.any((bonds['atom 1'] == free_sticker) | (bonds['atom 2'] == free_sticker)):
+                #     warnings.warn('Supposed free sticker is also bonded to another sticker!!!')
+
                 free_sticker_data = atoms[atoms['id'] == free_sticker]
                 free_sticker_x = free_sticker_data['x']; free_sticker_y = free_sticker_data['y']; free_sticker_z = free_sticker_data['z']
 
@@ -479,10 +477,7 @@ def three_four_atom_bond_exchange(sticker_neighbor_list: dict,
             min_row = new_fene_potentials[min_row_idx]
             new_sticker1 = min_row[0]; new_sticker2 = min_row[1]; fene_new = min_row[2]
 
-            if np.isnan(fene_new):
-                delta_U = 10**10
-            else:
-                delta_U = alpha * (fene_new - fene_old)
+            delta_U = alpha * (fene_new - fene_old)
 
             # Acceptance probability. If change in potential is negative, the acceptance probability automatically becomes 1.0.
             if T != 0:
@@ -510,20 +505,113 @@ def three_four_atom_bond_exchange(sticker_neighbor_list: dict,
                 bonds_to_delete[min(id1, id2)] = max(id1, id2)
                 bonds_to_create[min(new_sticker1, new_sticker2)] = max(new_sticker1, new_sticker2)
 
+                # Add originally bonded sticker that is now free to the already_exchanged_atoms list so that it is not considered for another exchange
                 if new_sticker1 == id1:
-                    already_exchanged_atoms.append(id2)
+                    already_exchanged_atoms.add(id2)
                 elif new_sticker1 == id2:
-                    already_exchanged_atoms.append(id1)
+                    already_exchanged_atoms.add(id1)
                 else:
-                    warnings.warn('Something was messed up!')
+                    warnings.warn('Neither atoms of the new bond has been bonded before!')
 
-                already_exchanged_atoms.append(new_sticker1)
-                already_exchanged_atoms.append(new_sticker2)
+                # Add newly bonded atoms to already_exchanged_atoms
+                already_exchanged_atoms.add(new_sticker1)
+                already_exchanged_atoms.add(new_sticker2)
+
+        if paired_bond_exchange and double_bonded_exchange:
+            id1, id2 = linked_pairs[0]
+            id3, id4 = linked_pairs[1]
+
+            if len({id1, id2, id3, id4}) < 4:
+                paired_bond_exchange = False
+                # print('Caught wrong bond exchange!', flush=True)
+
+        if paired_bond_exchange and double_bonded_exchange:
+            id1, id2 = linked_pairs[0]
+            id3, id4 = linked_pairs[1]
+
+            # print('Traditional bond exchange considered!', flush=True)
+
+            # Saving coordinates of id1 and id2 atoms for later use
+            id1_data = atoms[atoms['id'] == id1]
+            id1_x = id1_data['x']; id1_y = id1_data['y']; id1_z = id1_data['z']
+            id2_data = atoms[atoms['id'] == id2]
+            id2_x = id2_data['x']; id2_y = id2_data['y']; id2_z = id2_data['z']
+            id3_data = atoms[atoms['id'] == id3]
+            id3_x = id3_data['x']; id3_y = id3_data['y']; id3_z = id3_data['z']
+            id4_data = atoms[atoms['id'] == id4]
+            id4_x = id4_data['x']; id4_y = id4_data['y']; id4_z = id4_data['z']
+
+            # Remove bonded sticker ids from sticker_ids list
+            sticker_ids.remove(id1); sticker_ids.remove(id2)
+
+            distances = {}
+            distances[f'{id1}-{id2}'] = calculate_distance_pbc(box_dims, id1_x, id1_y, id1_z, id2_x, id2_y, id2_z)
+            distances[f'{id1}-{id3}'] = calculate_distance_pbc(box_dims, id1_x, id1_y, id1_z, id3_x, id3_y, id3_z)
+            distances[f'{id1}-{id4}'] = calculate_distance_pbc(box_dims, id1_x, id1_y, id1_z, id4_x, id4_y, id4_z)
+            distances[f'{id2}-{id3}'] = calculate_distance_pbc(box_dims, id2_x, id2_y, id2_z, id3_x, id3_y, id3_z)
+            distances[f'{id2}-{id4}'] = calculate_distance_pbc(box_dims, id2_x, id2_y, id2_z, id4_x, id4_y, id4_z)
+            distances[f'{id3}-{id4}'] = calculate_distance_pbc(box_dims, id3_x, id3_y, id3_z, id4_x, id4_y, id4_z)
+            
+            fene_1to2 = calculate_raw_fene_potential(distances[f'{id1}-{id2}'])
+            fene_1to3 = calculate_raw_fene_potential(distances[f'{id1}-{id3}'])
+            fene_1to4 = calculate_raw_fene_potential(distances[f'{id1}-{id4}'])
+            fene_2to3 = calculate_raw_fene_potential(distances[f'{id2}-{id3}'])
+            fene_2to4 = calculate_raw_fene_potential(distances[f'{id2}-{id4}'])
+            fene_3to4 = calculate_raw_fene_potential(distances[f'{id3}-{id4}'])
+
+            U_old = fene_1to2 + fene_3to4; U_new1 = fene_1to3 + fene_2to4; U_new2 = fene_1to4 + fene_2to3
+
+            if U_new1 <= U_new2:
+                U_new = U_new1
+                new_id1 = int(id1); new_id2 = int(id3)
+                new_id3 = int(id2); new_id4 = int(id4)
+            else:
+                U_new = U_new2
+                new_id1 = int(id1); new_id2 = int(id4) 
+                new_id3 = int(id2); new_id4 = int(id3)
+
+            # U_new = min(U_new1, U_new2)
+
+            delta_U = alpha * (U_new - U_old)
+
+            # Acceptance probability. If change in potential is negative, the acceptance probability automatically becomes 1.0.
+            if T != 0:
+                P_accept = np.exp(-delta_U/(kB * T)) if delta_U > 0 else 1.0
+            else:
+                P_accept = 0
+
+            bond_exchange = False
+            if P_accept == 1:
+                bond_exchange = True
+                # print('Bond exchange happens naturally due to a negative delta U.')
+
+            else:
+                ran = random.uniform(0, P_coeff)
+                if P_accept >= ran:
+                    bond_exchange = True
+                    # print('Bond exchange happens due to Metropolis acceptance criterion.')
+
+            if bond_exchange:
+                id1 = int(id1); id2 = int(id2); id3 = int(id3); id4 = int(id4)
+
+                # Add original bonds to delete to dicitonary, organize such that key is smaller than value in the dictionary
+                bonds_to_delete[min(id1, id2)] = max(id1, id2)
+                bonds_to_delete[min(id3, id4)] = max(id3, id4)
+
+                # Add original bonds to create to dicitonary, organize such that key is smaller than value in the dictionary
+                bonds_to_create[min(new_id1, new_id2)] = max(new_id1, new_id2)
+                bonds_to_create[min(new_id3, new_id4)] = max(new_id3, new_id4)
+
+                # Add newly bonded atoms to already_exchanged_atoms
+                already_exchanged_atoms.add(new_id1)
+                already_exchanged_atoms.add(new_id2)
+                already_exchanged_atoms.add(new_id3)
+                already_exchanged_atoms.add(new_id4)
 
 # -------------------- Gathering data from each process, combining them into one complete set of data and broadcasting it back to all processes--------------------
 
-    bonds_to_delete_list = list(bonds_to_delete.items())
-    bonds_to_create_list = list(bonds_to_create.items())
+    bonds_to_delete_list = list(bonds_to_delete.items())        # Create list to prevent silent overwriting when combining dictionaries
+    bonds_to_create_list = list(bonds_to_create.items())        # Create list to prevent silent overwriting when combining dictionaries
 
     gathered_bonds_to_delete = comm.gather(bonds_to_delete_list, root=0)
     gathered_bonds_to_create = comm.gather(bonds_to_create_list, root=0)

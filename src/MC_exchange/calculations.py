@@ -118,7 +118,7 @@ def calculate_raw_fene_potential(distance: float,
             Calculated FENE potential.
     """
     if distance >= R0:
-        V = np.nan      # 10^20 stands for infinite FENE potential here.
+        V = np.inf      # 10^20 stands for infinite FENE potential here.
     else:
         V = -0.5 * K * R0**2 * np.log(1 - (distance/R0)**2)
     return V
