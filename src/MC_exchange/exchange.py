@@ -1,7 +1,6 @@
 import numpy as np
 import warnings
 import random
-# import pandas as pd
 
 from itertools import combinations
 
@@ -388,39 +387,42 @@ def three_four_atom_bond_exchange(sticker_neighbor_list: dict,
     bonds_to_delete and bonds_to_create dictionaries are returned. 
     """
 
-    already_exchanged_atoms = set()    # List used to prevent the same pair of atoms taking part in bond exchange more than once
-    bonds_to_delete = {}            # Final dictionary containing atom1 and atom2 as key: value pairs between which bonds should be created after bond exchange
-    bonds_to_create = {}            # Final dictionary containing atom1 and atom2 as key: value pairs between which bonds should be created after bond exchange
+    already_exchanged_atoms = set()    # Set used to prevent the same pair of atoms taking part in bond exchange more than once
+    bonds_to_delete = {}               # Final dictionary containing atom1 and atom2 as key: value pairs between which bonds should be created after bond exchange
+    bonds_to_create = {}               # Final dictionary containing atom1 and atom2 as key: value pairs between which bonds should be created after bond exchange
 
+    # Loop through entries in neighbor list
     for atom_main, neighbors_data in sticker_neighbor_list.items():
-        sticker_ids = []        # Combined list of sticker IDs, including atom_main
-        stopper_bond_exchange = False
-        paired_bond_exchange = False
+        sticker_ids = []                # Combined list of sticker IDs, will include atom_main
+        stopper_bond_exchange = False   # Boolean whether to perform BER including 1 pair of bonded stickers and a nearby 'free' sticker
+        paired_bond_exchange = False    # Boolean whether to perform BER between two pairs of bonded sticker
 
         if atom_main in already_exchanged_atoms:    # Skip to next iteration of atom_main has already been exchanged
             continue
 
         sticker_ids.append(atom_main)
         for neighbor_id in neighbors_data.keys():
-            if neighbor_id in already_exchanged_atoms:      # Skip to next iteration of neighbor_id has already been exchanged
+            if neighbor_id in already_exchanged_atoms or neighbor_id < atom_main:      # Skip to next iteration of neighbor_id has already been exchanged or is lower in value than atom_main to prevent double counting
                 continue
-            if neighbor_id < atom_main:      # Avoid double counting
-                continue
+            # if neighbor_id < atom_main:      # Avoid double counting
+            #     continue
             sticker_ids.append(neighbor_id)
 
-        n_stickers = len(sticker_ids)
+        n_stickers = len(sticker_ids)   # Number of stickers that can potentially be exchanged
 
         # Continue with next iteration if the total number of stickers (including atom_main) is not enough for BER.
         if n_stickers < 3:
             continue
 
-        linked_pairs = []
+        linked_pairs = []   # List holding data on which atoms are bonded from the sticker_ids list
         for id1, id2 in combinations(sticker_ids, 2):
+            # TODO: check this statement. Something unexpected happens where 
             if np.any(
                 ((bonds['atom 1'] == id1) & (bonds['atom 2'] == id2)) |
                 ((bonds['atom 1'] == id2) & (bonds['atom 2'] == id1))
             ):
                 linked_pairs.append((id1, id2))
+                # print(f'Linked pair appended: ({id1, id2})', flush=True)
 
         n_pairs = len(linked_pairs)
 
@@ -434,9 +436,14 @@ def three_four_atom_bond_exchange(sticker_neighbor_list: dict,
             id1, id2 = linked_pairs[0]
             id3, id4 = linked_pairs[1]
 
+            # Test to see if the four atom IDs are unique
             if len({id1, id2, id3, id4}) == 4:
                 paired_bond_exchange = True
-        
+            else:
+                pass
+                # print(f'\nWrongly made linked_pairs: {linked_pairs}', flush=True)
+                # print(f'Sticker IDs: {sticker_ids}\n', flush=True)
+
         if stopper_bond_exchange and stopper_exchange:
             id1, id2 = linked_pairs[0]
 
@@ -453,6 +460,12 @@ def three_four_atom_bond_exchange(sticker_neighbor_list: dict,
             distances[f'{id1}-{id2}'] = calculate_distance_pbc(box_dims, id1_x, id1_y, id1_z, id2_x, id2_y, id2_z)
             for free_sticker in sticker_ids:
 
+                # TODO: write an if statement here that checks whether the free_sticker is bonded to another sticker that may be outside the considered neighbor list (i.e. outside the sphere with radius Rc)
+                if np.any((bonds['atom 1'] == free_sticker) | (bonds['atom 2'] == free_sticker)):
+                    sticker_ids.remove(free_sticker)
+                    # print(f'Removed sticker \t {free_sticker}', flush=True)
+                    continue
+
                 # if np.any((bonds['atom 1'] == free_sticker) | (bonds['atom 2'] == free_sticker)):
                 #     warnings.warn('Supposed free sticker is also bonded to another sticker!!!')
 
@@ -462,6 +475,13 @@ def three_four_atom_bond_exchange(sticker_neighbor_list: dict,
                 distances[f'{id1}-{free_sticker}'] = calculate_distance_pbc(box_dims, id1_x, id1_y, id1_z, free_sticker_x, free_sticker_y, free_sticker_z)
                 distances[f'{id2}-{free_sticker}'] = calculate_distance_pbc(box_dims, id2_x, id2_y, id2_z, free_sticker_x, free_sticker_y, free_sticker_z)
             
+            # print(f'Distances dictionary: \t {distances}', flush=True)
+
+            if len(distances) < 2:
+                continue
+
+            # print(f'Exchange evaluated using: \t {distances}\n', flush=True)
+
             fene_old = calculate_raw_fene_potential(distances[f'{id1}-{id2}'])
             new_fene_potentials = []        # FENE potentials of all possible NEW configurations
             for free_sticker in sticker_ids:
@@ -497,6 +517,7 @@ def three_four_atom_bond_exchange(sticker_neighbor_list: dict,
                     # print('Bond exchange happens due to Metropolis acceptance criterion.')
 
             if bond_exchange:
+                # print(f'Exchange granted!\nExchange between {id1}-{id2} original to {new_sticker1}-{new_sticker2}', flush=True)
                 id1 = int(id1)
                 id2 = int(id2)
                 new_sticker1 = int(new_sticker1)
@@ -504,6 +525,9 @@ def three_four_atom_bond_exchange(sticker_neighbor_list: dict,
 
                 bonds_to_delete[min(id1, id2)] = max(id1, id2)
                 bonds_to_create[min(new_sticker1, new_sticker2)] = max(new_sticker1, new_sticker2)
+
+                # print(f'Bonds to delete on proc {comm.Get_rank()}: {bonds_to_delete}', flush=True)
+                # print(f'Bonds to create on proc {comm.Get_rank()}: {bonds_to_create}', flush=True)
 
                 # Add originally bonded sticker that is now free to the already_exchanged_atoms list so that it is not considered for another exchange
                 if new_sticker1 == id1:
@@ -516,14 +540,6 @@ def three_four_atom_bond_exchange(sticker_neighbor_list: dict,
                 # Add newly bonded atoms to already_exchanged_atoms
                 already_exchanged_atoms.add(new_sticker1)
                 already_exchanged_atoms.add(new_sticker2)
-
-        if paired_bond_exchange and double_bonded_exchange:
-            id1, id2 = linked_pairs[0]
-            id3, id4 = linked_pairs[1]
-
-            if len({id1, id2, id3, id4}) < 4:
-                paired_bond_exchange = False
-                # print('Caught wrong bond exchange!', flush=True)
 
         if paired_bond_exchange and double_bonded_exchange:
             id1, id2 = linked_pairs[0]
