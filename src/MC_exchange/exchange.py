@@ -404,8 +404,6 @@ def three_four_atom_bond_exchange(sticker_neighbor_list: dict,
         for neighbor_id in neighbors_data.keys():
             if neighbor_id in already_exchanged_atoms or neighbor_id < atom_main:      # Skip to next iteration of neighbor_id has already been exchanged or is lower in value than atom_main to prevent double counting
                 continue
-            # if neighbor_id < atom_main:      # Avoid double counting
-            #     continue
             sticker_ids.append(neighbor_id)
 
         n_stickers = len(sticker_ids)   # Number of stickers that can potentially be exchanged
@@ -429,10 +427,10 @@ def three_four_atom_bond_exchange(sticker_neighbor_list: dict,
         if n_pairs == 0:      # Continue with next iteration of main loop if no pair is found
             continue
 
-        if n_pairs == 1:      # Evaluate 3 sticker bond exchange if only 1 pair of sticker is linked
+        elif n_pairs == 1:      # Evaluate 3 sticker bond exchange if only 1 pair of sticker is linked
             stopper_bond_exchange = True
 
-        if n_pairs == 2:       # Evaluate 4 sticker BER if two pairs of sticker is linked
+        elif n_pairs == 2:       # Evaluate 4 sticker BER if two pairs of sticker is linked
             id1, id2 = linked_pairs[0]
             id3, id4 = linked_pairs[1]
 
@@ -459,32 +457,24 @@ def three_four_atom_bond_exchange(sticker_neighbor_list: dict,
             distances = {}
             distances[f'{id1}-{id2}'] = calculate_distance_pbc(box_dims, id1_x, id1_y, id1_z, id2_x, id2_y, id2_z)
             for free_sticker in sticker_ids:
-
-                # TODO: write an if statement here that checks whether the free_sticker is bonded to another sticker that may be outside the considered neighbor list (i.e. outside the sphere with radius Rc)
+                # Remove free_sticker if it is bonded to another sticker that may be outside the considered neighbor list (i.e. outside the sphere with radius Rc)
                 if np.any((bonds['atom 1'] == free_sticker) | (bonds['atom 2'] == free_sticker)):
                     sticker_ids.remove(free_sticker)
                     # print(f'Removed sticker \t {free_sticker}', flush=True)
                     continue
+            
+            if len(sticker_ids) == 0: # Continue to next iteration of main loop if no free stickers are left to consider for BER
+                continue
 
-                # if np.any((bonds['atom 1'] == free_sticker) | (bonds['atom 2'] == free_sticker)):
-                #     warnings.warn('Supposed free sticker is also bonded to another sticker!!!')
-
+            fene_old = calculate_raw_fene_potential(distances[f'{id1}-{id2}'])
+            new_fene_potentials = []        # FENE potentials of all possible NEW configurations
+            for free_sticker in sticker_ids:
                 free_sticker_data = atoms[atoms['id'] == free_sticker]
                 free_sticker_x = free_sticker_data['x']; free_sticker_y = free_sticker_data['y']; free_sticker_z = free_sticker_data['z']
 
                 distances[f'{id1}-{free_sticker}'] = calculate_distance_pbc(box_dims, id1_x, id1_y, id1_z, free_sticker_x, free_sticker_y, free_sticker_z)
                 distances[f'{id2}-{free_sticker}'] = calculate_distance_pbc(box_dims, id2_x, id2_y, id2_z, free_sticker_x, free_sticker_y, free_sticker_z)
-            
-            # print(f'Distances dictionary: \t {distances}', flush=True)
 
-            if len(distances) < 2:
-                continue
-
-            # print(f'Exchange evaluated using: \t {distances}\n', flush=True)
-
-            fene_old = calculate_raw_fene_potential(distances[f'{id1}-{id2}'])
-            new_fene_potentials = []        # FENE potentials of all possible NEW configurations
-            for free_sticker in sticker_ids:
                 potential1 = calculate_raw_fene_potential(distances[f'{id1}-{free_sticker}'])
                 potential2 = calculate_raw_fene_potential(distances[f'{id2}-{free_sticker}'])
 
@@ -634,9 +624,9 @@ def three_four_atom_bond_exchange(sticker_neighbor_list: dict,
 
     mpi_rank = comm.Get_rank()
     if mpi_rank == 0:
-        # Flatten lists
         assert gathered_bonds_to_delete is not None # For type checker
         assert gathered_bonds_to_create is not None # For type checker
+        # Flatten lists
         all_bonds_to_delete = [pair for sublist in gathered_bonds_to_delete for pair in sublist]
         all_bonds_to_create = [pair for sublist in gathered_bonds_to_create for pair in sublist]
         
