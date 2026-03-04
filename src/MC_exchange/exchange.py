@@ -73,7 +73,7 @@ def perform_bond_swap(sticker_neighbor_list: dict,
     total_N_MC_exchanges : Total number of bond exchanges performed through Monte Carlo evaluation.
     """
     warnings.warn(
-        "perform_bond_swap() is deprecated and will be removed in version 1.0.0."
+        "perform_bond_swap() is deprecated and will be removed in version 2.0.0."
         "Use evaluate_bond_exchange() instead.",
         category=DeprecationWarning,
         stacklevel=2
