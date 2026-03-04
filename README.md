@@ -6,27 +6,11 @@ The package is written with the ease of use in mind. However, users must be warn
 
 ## General Use
 
-To install the package, users are asked to clone the repository. Once at the root level of the repository, the distribution files can be generated, and subsequently the package can be installed as follows:
+The package can be installed from PyPI distribution archive using:
 
-<details>
-<summary><b>macOS / Linux</b></summary>
-
-```bash
-python3 -m pip install --upgrade build
-python3 -m build
-pip install dist/mc_exchange-1.0.0-py3-none-any.whl
+```zsh
+pip install MC-exchange
 ```
-</details>
-
-<details>
-<summary><b>Windows</b></summary>
-
-```cmd
-py -m pip install --upgrade build
-py -m build
-pip install dist/mc_exchange-1.0.0-py3-none-any.whl
-```
-</details>
 
 After successful installation of the MC-Exchange Python package, it can be imported into a script as follows:
 
@@ -54,6 +38,8 @@ The software is designed such that it works when LAMMPS simulations are run para
 by the `mpi4py` Python package. 
 
 ## Example script
+
+Users are encouraged to clone the [repository](https://github.com/balintmagyari/MC_exchange) of this project to access all source files and example code.
 
 To run the example script, make sure that the Python environment into which MC-Exchange was installed is activated and you are located in the 
 `src/example/` directory. To run the example script simply run the following command in the terminal:
