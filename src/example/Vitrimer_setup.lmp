@@ -1,0 +1,55 @@
+# ------------Variables and Constants------------
+
+    # DO NOT CHANGE THESE VARIABLES
+    variable epsilon equal 1.0                                # Epsilon for LJ potential (i.e. well depth, interaction strength)
+    variable sigma equal 1.0                                  # Sigma for LJ potential (i.e. bead diameter)
+    comm_modify cutoff 1.8                                    # Communication cutoff for pair interactions (needs to be larger than bond length)
+
+    # Variables you can change
+    variable data_file string "350B_35sticky_4linked.data"    # Data file you wish to use
+    
+    variable random_seed equal ${SEED}                        # Random seed
+    variable temp_eq equal ${TEMP}                            # Equilibrium temperature
+
+    variable fene_k equal 30.0                                # FENE bond constant
+    variable fene_r0 equal 1.5                                # FENE bond length
+
+    variable lj_cutoff equal 2^(1/6)                          # Cutoff for LJ potential
+
+# ------------Initialization------------
+    units lj
+    dimension 3
+    boundary p p p
+    atom_style full
+
+    read_data ${data_file} extra/bond/per/atom 2
+
+# ------------Interactions Settings------------
+
+    # Non-bonding interaction------------
+    pair_style lj/cut ${lj_cutoff}
+    pair_coeff * * ${epsilon} ${sigma}              
+
+    # Bonding interaction------------
+    bond_style fene
+    bond_coeff * ${fene_k} ${fene_r0} ${epsilon} ${sigma}
+    special_bonds fene
+
+# ------------Run Settings------------
+    velocity all create ${temp_eq} ${random_seed}
+    fix f1 all langevin ${temp_eq} ${temp_eq} $(100.0*dt) ${random_seed}
+    fix f2 all nve
+
+    # ----- Thermo log file calculations -----
+    compute myTemp all temp
+    compute stresses all pressure myTemp
+
+    variable Sxx equal c_stresses[1]
+    variable Syy equal c_stresses[2]
+    variable Szz equal c_stresses[3]
+    variable Sxy equal c_stresses[4]
+    variable Sxz equal c_stresses[5]
+    variable Syz equal c_stresses[6]
+
+    thermo          10
+    thermo_style    custom elapsed time temp v_Sxx v_Syy v_Szz v_Sxy v_Sxz v_Syz bonds
