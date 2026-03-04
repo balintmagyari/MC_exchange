@@ -1,10 +1,6 @@
 import MC_exchange as mc
 from mpi4py import MPI
 from lammps import lammps
-import argparse
-import warnings
-import numpy as np
-import json
 
 def loop(lmp: lammps, 
          n: int, 
