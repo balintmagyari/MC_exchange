@@ -6,11 +6,12 @@ from itertools import combinations
 
 from typing import Union
 
+import warnings
+
 from mpi4py import MPI
 from .calculations import calculate_distance_pbc, calculate_fene_potential, calculate_lj_potential, calculate_raw_fene_potential
 
-
-def perform_bond_exchange(sticker_neighbor_list: dict, 
+def perform_bond_swap(sticker_neighbor_list: dict, 
                           bonds: np.ndarray,
                           atoms: np.ndarray,
                           box_dims: np.ndarray,
@@ -23,10 +24,14 @@ def perform_bond_exchange(sticker_neighbor_list: dict,
                           return_stats: bool = False
                           ) -> tuple:
     """
-    Evaluate bond exchange dynamics on the local process, gather combined data on which
+    Perform 'bond swap' style bond exchange in vitrimers. This is the bond exchange reaction where 
+    two pairs of bonded stickers come into close contact and exchange partners.
+
+    This function evaluates bond exchange dynamics on the local process, gather combined data on which
     bonds to delete and create, and broadcast that combined data to all processes.
 
-    If return_stats = True, statistics about the number of exchanges is returned.
+    If return_stats = True, statistics about the number of exchanges is returned, and thus the length
+    of the returned tuple is changed accordingly.
 
     Parameters
     ---------
@@ -67,6 +72,12 @@ def perform_bond_exchange(sticker_neighbor_list: dict,
     total_N_deltaU_exchanges : Total number of bond exchanges performed due to a reduces potential.
     total_N_MC_exchanges : Total number of bond exchanges performed through Monte Carlo evaluation.
     """
+    warnings.warn(
+        "perform_bond_swap() is deprecated and will be removed in version 1.0.0."
+        "Use evaluate_bond_exchange() instead.",
+        category=DeprecationWarning,
+        stacklevel=2
+    )
     
     # Counters for statistics
     N_possible = 0              # Possible total number of exchanges given solely the distance criterion.
@@ -214,12 +225,6 @@ def perform_bond_exchange(sticker_neighbor_list: dict,
                 f'{atom_c}-{atom_d}': calculate_lj_potential(distances[f'{atom_c}-{atom_d}'])
             }
 
-            # with open("datas/FENE_potentials.json", 'w') as file:
-            #     json.dump(fene_potentials, file)
-
-            # with open("datas/LJ_potentials.json", 'w') as file:
-            #     json.dump(lj_potentials, file)
-
             # Potential energy of old configuration
             U_old = fene_potentials[f'{atom_main}-{atom_c}'] + fene_potentials[f'{neighbor_id}-{atom_d}'] + \
                     lj_potentials[f'{atom_main}-{neighbor_id}'] + lj_potentials[f'{atom_main}-{atom_d}'] + \
@@ -340,7 +345,7 @@ def perform_bond_exchange(sticker_neighbor_list: dict,
     else:
         return complete_bonds_to_delete, complete_bonds_to_create
     
-def three_four_atom_bond_exchange(sticker_neighbor_list: dict, 
+def evaluate_bond_exchange(sticker_neighbor_list: dict, 
                           bonds: np.ndarray,
                           atoms: np.ndarray,
                           box_dims: np.ndarray,
@@ -348,8 +353,8 @@ def three_four_atom_bond_exchange(sticker_neighbor_list: dict,
                           alpha: float = 1.0,
                           P_coeff: float = 1.0,
                           kB: float = 1.0,
-                          stopper_exchange: bool = True,
-                          double_bonded_exchange: bool = True,
+                          bond_shift: bool = True,
+                          bond_swap: bool = True,
                           comm: MPI.Intracomm = MPI.COMM_WORLD
                           ) -> tuple:
     """
@@ -377,12 +382,18 @@ def three_four_atom_bond_exchange(sticker_neighbor_list: dict,
         Monte Carlo exchange. Default is 1.0.
     kB : float
         Boltzmann's constant. Default is 1.0.
+    bond_shift : bool
+        Whether to allow bond shift bond exchange reactions (BERs) to occur. These BERs occur between a bonded pair of
+        stickers and a free sticker.
+    bond_swap : bool
+        Whether to allow bond swap bond exchange reactions (BERs) to occur. These BERs occur between two pairs of 
+        bonded stickers where bonding partners are swapped.
     comm : MPI.Intracomm 
         MPI communicator. Default is MPI.COMM_WORLD.
 
     Returns
     -------
-    tuple[dict, dict] | tuple[dict, dict, int, int, int, int]
+    tuple[dict, dict]
 
     bonds_to_delete and bonds_to_create dictionaries are returned. 
     """
@@ -442,7 +453,7 @@ def three_four_atom_bond_exchange(sticker_neighbor_list: dict,
                 # print(f'\nWrongly made linked_pairs: {linked_pairs}', flush=True)
                 # print(f'Sticker IDs: {sticker_ids}\n', flush=True)
 
-        if stopper_bond_exchange and stopper_exchange:
+        if stopper_bond_exchange and bond_shift:
             id1, id2 = linked_pairs[0]
 
             # Saving coordinates of id1 and id2 atoms for later use
@@ -531,7 +542,7 @@ def three_four_atom_bond_exchange(sticker_neighbor_list: dict,
                 already_exchanged_atoms.add(new_sticker1)
                 already_exchanged_atoms.add(new_sticker2)
 
-        if paired_bond_exchange and double_bonded_exchange:
+        if paired_bond_exchange and bond_swap:
             id1, id2 = linked_pairs[0]
             id3, id4 = linked_pairs[1]
 
