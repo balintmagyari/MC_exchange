@@ -3,4 +3,5 @@ venv/
 __pycache__/
 dist/
 .DS_Store
-src/example/*.dump
+# src/example/*.dump
+src/example/*
