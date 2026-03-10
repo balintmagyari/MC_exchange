@@ -1,0 +1,47 @@
+# This CITATION.cff file was generated with cffinit.
+# Visit https://bit.ly/cffinit to generate yours today!
+
+cff-version: 1.2.0
+title: MC-exchange
+message: >-
+  If you use this software, please cite it using the
+  metadata from this file.
+type: software
+authors:
+  - given-names: Balint
+    family-names: Magyari
+    email: balint.magyari@unina.it
+    affiliation: 'University of Naples Federico II, University of Crete'
+    orcid: 'https://orcid.org/0009-0007-2282-8043'
+repository-code: 'https://github.com/balintmagyari/MC_exchange'
+abstract: >-
+  The MC-Exchange Python package has been developed to
+  support the dynamic bond exchange reactions (BERs) during
+  a molecular dynamics (MD) simulation run using LAMMPS
+  (Large-scale Atomic/Molecular Massively Parallel
+  Simulator) software. Using the LAMMPS Python package, a MD
+  simulation can be run directly from a Python script,
+  allowing an interface between Python and LAMMPS. The
+  MC-Exchange Python package uses this to gather the
+  necessary data from the LAMMPS MD simulation, analyze the
+  data, determine which bonds to exchanged, and finally
+  communicate the altered bond data back to LAMMPS, where
+  the actual bond exchange can take place.
+
+
+  The package is written with the ease of use in mind.
+  However, users must be warned that a thorough
+  understanding of the LAMMPS Python package is necessary to
+  be able to gather the necessary bits of data prior to
+  performing bond exchange reactions using the MC-Exchange
+  Python library.
+keywords:
+  - vitrimer
+  - Monte Carlo
+  - bond exchange reaction
+  - LAMMPS
+  - molecular dynamics
+license: MIT
+commit: 8c07c2bdd136c0f300ca8fda2b0121b402d0dab3
+version: 1.0.2
+date-released: '2026-03-05'
