@@ -5,4 +5,4 @@ __email__ = "balint.magyari@unina.it"
 from .calculations import *
 from .data import *
 from .neigh_list import neigh_list
-from .exchange import perform_bond_swap, evaluate_bond_exchange
+from .exchange import perform_bond_swap, evaluate_bond_exchange, complementary_bond_exchange
