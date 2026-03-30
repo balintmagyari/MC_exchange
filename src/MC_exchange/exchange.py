@@ -767,6 +767,7 @@ def complementary_bond_exchange(sticker_neighbor_list: dict,
         elif n_pairs == 1:      # Evaluate 3 sticker bond exchange if only 1 pair of sticker is linked
             stopper_bond_exchange = True
 
+        # TODO: Something goes wrong here when it comes to bond exchange. Duplicate atoms are found with multiple cross-links.
         elif n_pairs == 2:       # Evaluate 4 sticker BER if two pairs of sticker is linked
             id1, id2 = linked_pairs[0]
             id3, id4 = linked_pairs[1]
