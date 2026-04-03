@@ -59,7 +59,7 @@ def _local_atoms_and_subdomain(
     The ghost atom communication is such that ghost atoms are communicated in the positive coordinate dimensions. 
     This is done in order to preserve computing power later on when the neighbor lists are constructed.
 
-    The returned array is of the same size as the input atom_data array, and also retrains its structured array features.
+    The returned array is of the same size as the input atom_data array, and also retains its structured array features.
 
     Parameters
     ----------
