@@ -93,7 +93,8 @@ def calculate_fene_potential(distance: float,
     return V
 
 def calculate_raw_fene_potential(distance: float,
-                             K: float = 30.0, R0: float = 1.5, eps: float = 1.0, sigma: float = 1.0):
+                                 K: float = 30.0, 
+                                 R0: float = 1.5):
     """
     Calculates the raw FENE potential (no LJ included) of two bonding atoms in the system based on the distance between them.
 
@@ -106,10 +107,6 @@ def calculate_raw_fene_potential(distance: float,
             Bond coefficient or spring constant. Defaults to 30.0
     R0 : float
             Cut-off distance of the potential. Defaults to 1.5
-    eps : float
-            Lennard-Jones energy term. MUST match that of the non-bonding LJ term. Defaults to 1.0
-    sigma : float
-            Zero-crossing distance of the Lennard-Jones potential. Defaults to 1.0
 
     Returns
     --------
