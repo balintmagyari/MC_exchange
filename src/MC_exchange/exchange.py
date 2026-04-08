@@ -1,17 +1,13 @@
 import numpy as np
 import warnings
 import random
-
 from itertools import combinations
 
-from typing import Union
-
-import warnings
-
-from icecream import ic
-
+# System related imports
 from mpi4py import MPI
 import sys
+
+# Imports from other modules
 from .calculations import calculate_distance_pbc, calculate_fene_potential, calculate_lj_potential, calculate_raw_fene_potential
 from .error_handling import mpi_abort_on_exception
 
