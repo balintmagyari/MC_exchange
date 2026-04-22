@@ -981,7 +981,7 @@ def complementary_bond_exchange(neighbor_list: dict,
             
             # If cross-rank conflict exists, reject the entire move
             if conflict:
-                print('Cross-processor conflict was found! Move rejected', flush=True)
+                # print('Cross-processor conflict was found! Move rejected', flush=True)
                 continue
                 
             # If no conflict, apply all deletions and creations using the undirected min/max standard
