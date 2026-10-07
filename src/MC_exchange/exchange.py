@@ -686,8 +686,10 @@ def complementary_bond_exchange(neighbor_list: dict,
     This function performs reversible bond exchanges between active stickers of complementary 
     types (Group A and Group B). It evaluates local neighborhoods to propose physically valid 
     3-body associative bond shifts and/or 4-body bond swaps. Proposed reactions are accepted 
-    or rejected based on the Metropolis-Hastings criterion using the change in FENE and 
-    Lennard-Jones potentials. 
+    or rejected based on the Metropolis-Hastings criterion using the change in the raw FENE
+    potential. This assumes LAMMPS 'special_bonds fene' (lj 0 1 1) with 'bond_style fene',
+    under which the WCA/LJ contribution of a pair is the same whether it is bonded or not
+    and therefore cancels from the energy change.
     
     To maintain topological integrity in a parallelized environment, accepted moves are 
     gathered on the root process, evaluated for cross-processor spatial conflicts, and 
@@ -719,11 +721,11 @@ def complementary_bond_exchange(neighbor_list: dict,
     R0 : float, optional
         Maximum allowed bond extension parameter for the FENE potential. Default is 1.5.
     eps : float, optional
-        Well depth parameter (epsilon) for the Lennard-Jones potential. Default is 1.0.
+        Unused; kept for backwards compatibility. The LJ term cancels under 'special_bonds fene'.
     sigma : float, optional
-        Zero-crossing distance parameter (sigma) for the Lennard-Jones potential. Default is 1.0.
+        Unused; kept for backwards compatibility. The LJ term cancels under 'special_bonds fene'.
     Rc : float, optional
-        Cutoff radius for the Lennard-Jones potential calculation. Default is 2**(1/6).
+        Unused; kept for backwards compatibility. The LJ term cancels under 'special_bonds fene'.
     bond_shift : bool, optional
         If True, evaluates 3-body associative bond exchange reactions between a bonded pair 
         and a free sticker. Default is True.
@@ -892,42 +894,35 @@ def complementary_bond_exchange(neighbor_list: dict,
         trial_move = random.choice(potential_exchanges)
 
         fene_old, fene_new = 0.0, 0.0
-        lj_old, lj_new = 0.0, 0.0
+
+        # With special_bonds fene (lj 0 1 1), a bonded pair feels FENE + WCA (WCA from bond_style fene)
+        # and a non-bonded pair feels WCA (from pair_style lj/cut). The WCA term is therefore identical
+        # before and after the move and cancels, leaving only the raw FENE contribution in delta E.
 
         # Sum potentials for ALL bonds being broken
         for o_bond in trial_move['old_bonds']:
             idx_1, idx_2 = id_to_idx[o_bond[0]], id_to_idx[o_bond[1]]
             x1, y1, z1 = atoms['x'][idx_1], atoms['y'][idx_1], atoms['z'][idx_1]
             x2, y2, z2 = atoms['x'][idx_2], atoms['y'][idx_2], atoms['z'][idx_2]
-            
+
             dist = calculate_distance_pbc(box_dims, x1, y1, z1, x2, y2, z2)
             fene_old += calculate_raw_fene_potential(distance = dist,
                                                      K = K,
                                                      R0 = R0)
-            lj_old += calculate_lj_potential(distance = dist,
-                                             Rc = Rc,
-                                             eps = eps,
-                                             sigma = sigma)
 
         # Sum potentials for ALL bonds being formed
         for n_bond in trial_move['new_bonds']:
             idx_1, idx_2 = id_to_idx[n_bond[0]], id_to_idx[n_bond[1]]
             x1, y1, z1 = atoms['x'][idx_1], atoms['y'][idx_1], atoms['z'][idx_1]
             x2, y2, z2 = atoms['x'][idx_2], atoms['y'][idx_2], atoms['z'][idx_2]
-            
+
             dist = calculate_distance_pbc(box_dims, x1, y1, z1, x2, y2, z2)
             fene_new += calculate_raw_fene_potential(distance = dist,
                                                      K = K,
                                                      R0 = R0)
-            lj_new += calculate_lj_potential(distance = dist,
-                                             Rc = Rc,
-                                             eps = eps,
-                                             sigma = sigma)
 
         # Delta E Calculation
-        delta_E_fene = fene_new - fene_old
-        delta_E_lj = lj_new - lj_old
-        delta_E = delta_E_fene - delta_E_lj
+        delta_E = fene_new - fene_old
 
         # Metropolis Acceptance Criterion
         accept = False
