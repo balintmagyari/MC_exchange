@@ -1,4 +1,6 @@
-test*/
+tests/datas/
+tests/dumps/
+tests/logs/
 venv/
 __pycache__/
 dist/
