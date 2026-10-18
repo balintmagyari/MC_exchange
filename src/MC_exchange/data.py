@@ -81,10 +81,10 @@ def gather_bonds(lmp,
     bond_data['atom 2'] = atom2s
 
     if rank == root:
-        if isinstance(bond_type, int):
+        if isinstance(bond_type, (int, np.integer)):
             selected_bond_data: np.ndarray = bond_data[bond_data['type'] == bond_type]
         elif isinstance(bond_type, list):
-            selected_bond_data: np.ndarray = bond_data[np.isin(bond_data['type'], bond_data)]
+            selected_bond_data: np.ndarray = bond_data[np.isin(bond_data['type'], bond_type)]
         else:
             selected_bond_data = bond_data.copy()
 
@@ -105,7 +105,7 @@ def gather_bonds(lmp,
     mpi_dtype.Commit()  # Required for communication
 
     # 3. Broadcast Array Shape
-    selected_datashape = comm.bcast(selected_datashape, root=0)
+    selected_datashape = comm.bcast(selected_datashape, root=root)
 
     # 4. Prepare Buffers for Bcast
     if rank == root:
@@ -116,7 +116,7 @@ def gather_bonds(lmp,
         selected_bond_data = np.empty(selected_datashape, dtype=reconstructed_dtype)
 
     # 5. Broadcast the Data
-    comm.Bcast([selected_bond_data, mpi_dtype], root=0)
+    comm.Bcast([selected_bond_data, mpi_dtype], root=root)
     mpi_dtype.Free()  # Critical to prevent leaks
 
     return selected_bond_data
@@ -207,7 +207,7 @@ def gather_atoms(lmp,
     # Gather coordinates (flattened array)
     comm.Gatherv(
         sendbuf=local_x.ravel(),
-        recvbuf=(global_x, 3*send_counts if rank == 0 else None, 3*displacements if rank == 0 else None, MPI.DOUBLE), # type: ignore
+        recvbuf=(global_x, 3*send_counts if rank == root else None, 3*displacements if rank == root else None, MPI.DOUBLE), # type: ignore
         root=root
     )
 
@@ -234,7 +234,7 @@ def gather_atoms(lmp,
         atom_data['y'] = sorted_x[:,1]
         atom_data['z'] = sorted_x[:,2]
 
-        if isinstance(atom_type, int):
+        if isinstance(atom_type, (int, np.integer)):
             selected_atom_data: np.ndarray = atom_data[atom_data['type'] == atom_type]
         elif isinstance(atom_type, list):
             selected_atom_data: np.ndarray = atom_data[np.isin(atom_data['type'], atom_type)]
@@ -269,7 +269,7 @@ def gather_atoms(lmp,
         selected_atom_data = np.empty(selected_datashape, dtype=reconstructed_dtype)
 
     # 5. Broadcast the Data
-    comm.Bcast([selected_atom_data, mpi_dtype], root=0)
+    comm.Bcast([selected_atom_data, mpi_dtype], root=root)
     mpi_dtype.Free()  # Critical to prevent leaks
 
     return selected_atom_data

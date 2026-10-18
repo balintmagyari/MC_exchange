@@ -1,6 +1,7 @@
 import numpy as np
 import warnings
 import random
+import math
 from itertools import combinations
 
 # System related imports
@@ -733,8 +734,9 @@ def complementary_bond_exchange(neighbor_list: dict,
         If True, evaluates 4-body exchange reactions between two existing bonded pairs. 
         Default is True.
     return_stats : bool, optional
-        If True, tracks the exact number of successful shifts and swaps post-MPI conflict 
-        resolution and returns them. Default is False.
+        If True, returns a dictionary of exchange statistics: the number of successful shifts and
+        swaps after MPI conflict resolution, plus attempt/rejection counters for acceptance rates.
+        Default is False.
     comm : MPI.Intracomm, optional
         The MPI intracommunicator instance for parallel data gathering and broadcasting. 
         Default is MPI.COMM_WORLD.
@@ -749,7 +751,26 @@ def complementary_bond_exchange(neighbor_list: dict,
         If return_stats is True:
             - bonds_to_delete (dict): Dictionary of bonds targeted for deletion.
             - bonds_to_create (dict): Dictionary of bonds targeted for creation.
-            - exchange_stats (dict): Dictionary containing 'n_shifts', 'n_swaps', and 'total' successful reactions.
+            - exchange_stats (dict): Global values, summed over all ranks and identical on every rank.
+              Counts are int, sums are float. X is 'shift' or 'swap'.
+                'n_shifts', 'n_swaps', 'total': successful reactions after conflict resolution.
+                'n_sites': neighbourhoods that proposed a trial move (one proposal each).
+                'n_options': candidate moves enumerated across all sites.
+                'n_proposed_X': proposals per mechanism.
+                'n_proposed_overstretched': proposals with delta E = +inf (a new bond >= R0);
+                    always rejected and also included in 'n_metropolis_rejected_X'.
+                'n_metropolis_rejected_X': proposals rejected by the Metropolis test.
+                'n_accepted_local_X': proposals accepted on their rank, before conflict resolution.
+                'n_conflict_rejected_X': locally accepted moves dropped for sharing an atom with a
+                    move from another rank.
+                'n_skipped_quarantined': sites skipped because their central sticker had already
+                    reacted in this call.
+                'sum_dE_proposed': sum of finite delta E over all proposals.
+                'sum_dE_accepted': sum of finite delta E over locally accepted moves.
+              These identities hold:
+                n_sites = n_proposed_shift + n_proposed_swap
+                n_proposed_X = n_metropolis_rejected_X + n_accepted_local_X
+                n_accepted_local_X = n_conflict_rejected_X + n_shifts (or n_swaps)
 
     Raises
     ------
@@ -777,6 +798,18 @@ def complementary_bond_exchange(neighbor_list: dict,
     already_exchanged_atoms = set()    # Set used to prevent the same pair of atoms taking part in bond exchange more than once
     local_accepted_moves = []
 
+    # Local acceptance counters (plain Python numbers, cheaper than numpy element updates in the loop).
+    # Shift/swap pairs are indexed by kind: 0 = shift, 1 = swap
+    n_sites = 0                         # Neighbourhoods that proposed a trial move
+    n_options = 0                       # Candidate moves enumerated across all sites
+    n_proposed = [0, 0]
+    n_overstretched = 0                 # Proposals with an infinite delta E (a new bond >= R0)
+    n_metropolis_rejected = [0, 0]
+    n_accepted_local = [0, 0]
+    n_skipped_quarantined = 0
+    sum_dE_proposed = 0.0               # Finite delta E only
+    sum_dE_accepted = 0.0
+
     # Create a fast lookup set for existing bonds (O(1) lookup time)
     fast_bond_set = set(zip(bonds['atom 1'], bonds['atom 2']))
     fast_bond_set.update(zip(bonds['atom 2'], bonds['atom 1'])) # Add reverse pairs
@@ -800,6 +833,7 @@ def complementary_bond_exchange(neighbor_list: dict,
         sticker_ids = []                # Combined list of sticker IDs, will include atom_main
 
         if atom_main in already_exchanged_atoms:    # Skip to next iteration of atom_main has already been exchanged
+            n_skipped_quarantined += 1
             continue
 
         sticker_ids.append(atom_main)
@@ -891,7 +925,12 @@ def complementary_bond_exchange(neighbor_list: dict,
         if len(potential_exchanges) == 0:
             continue
 
+        n_sites += 1
+        n_options += len(potential_exchanges)
+
         trial_move = random.choice(potential_exchanges)
+        kind = 0 if len(trial_move['old_bonds']) == 1 else 1
+        n_proposed[kind] += 1
 
         fene_old, fene_new = 0.0, 0.0
 
@@ -924,6 +963,16 @@ def complementary_bond_exchange(neighbor_list: dict,
         # Delta E Calculation
         delta_E = fene_new - fene_old
 
+        # The raw FENE potential is infinite for a bond >= R0, so a single such proposal would turn
+        # the sums into +/-inf. Only finite delta E is summed. delta E = +inf (a new bond >= R0) is
+        # always rejected and counted as overstretched. -inf/nan need an existing bond >= R0, which
+        # LAMMPS fene allows with a "FENE bond too long" warning; those are left out of the sums only.
+        dE_finite = math.isfinite(delta_E)      # math.isfinite: ~15x cheaper than np.isfinite on a scalar
+        if dE_finite:
+            sum_dE_proposed += delta_E
+        elif delta_E > 0:
+            n_overstretched += 1
+
         # Metropolis Acceptance Criterion
         accept = False
         if delta_E < 0:
@@ -933,11 +982,18 @@ def complementary_bond_exchange(neighbor_list: dict,
             if random.uniform(0, 1) < probability:
                 accept = True
 
+        if not accept:
+            n_metropolis_rejected[kind] += 1
+
         # ---------------------------------------------------------
         # 5. Topology Updates
         # ---------------------------------------------------------
         # Instead of breaking the move apart, save the entire move as a unit
         if accept:
+            n_accepted_local[kind] += 1
+            if dE_finite:
+                sum_dE_accepted += delta_E
+
             # Note: You need to define local_accepted_moves = [] at the very top of your function
             # right beneath where you defined already_exchanged_atoms = set()
             local_accepted_moves.append(trial_move)
@@ -964,6 +1020,7 @@ def complementary_bond_exchange(neighbor_list: dict,
         # Initialize global counters on the root process
         global_shifts = 0
         global_swaps = 0
+        n_conflict_rejected = [0, 0]    # Counted independently, so n_accepted_local = n_conflict_rejected + n_X is a real check
 
         # Conflict resolution: evaluate at the MOVE level, not the bond level
         for move in all_moves:
@@ -977,6 +1034,7 @@ def complementary_bond_exchange(neighbor_list: dict,
             # If cross-rank conflict exists, reject the entire move
             if conflict:
                 # print('Cross-processor conflict was found! Move rejected', flush=True)
+                n_conflict_rejected[0 if len(move['old_bonds']) == 1 else 1] += 1
                 continue
                 
             # If no conflict, apply all deletions and creations using the undirected min/max standard
@@ -1007,20 +1065,47 @@ def complementary_bond_exchange(neighbor_list: dict,
 
         global_shifts = 0
         global_swaps = 0
+        n_conflict_rejected = [0, 0]
 
     # Broadcasting bonds to delete/create dictionaries
     complete_bonds_to_delete = comm.bcast(complete_bonds_to_delete, root=0)
     complete_bonds_to_create = comm.bcast(complete_bonds_to_create, root=0)
 
-    # Broadcast the final statistics
-    global_shifts = comm.bcast(global_shifts, root=0)
-    global_swaps = comm.bcast(global_swaps, root=0)
+    # Broadcast the final statistics, including the conflict counters only known on root
+    global_shifts, global_swaps, n_conflict_rejected = comm.bcast(
+        (global_shifts, global_swaps, n_conflict_rejected), root=0)
+
+    # Sum the local acceptance counters over all ranks in one collective. Every rank must reach it,
+    # so it is unconditional. float64 is exact for integer counts up to 2**53.
+    local_counters = np.array([n_sites, n_options,
+                               n_proposed[0], n_proposed[1],
+                               n_overstretched,
+                               n_metropolis_rejected[0], n_metropolis_rejected[1],
+                               n_accepted_local[0], n_accepted_local[1],
+                               n_skipped_quarantined,
+                               sum_dE_proposed, sum_dE_accepted], dtype=np.float64)
+    global_counters = np.empty_like(local_counters)
+    comm.Allreduce(local_counters, global_counters, op=MPI.SUM)
 
     if return_stats:
         exchange_stats = {
             'n_shifts': global_shifts,
             'n_swaps': global_swaps,
-            'total': global_shifts + global_swaps
+            'total': global_shifts + global_swaps,
+            'n_sites': int(global_counters[0]),
+            'n_options': int(global_counters[1]),
+            'n_proposed_shift': int(global_counters[2]),
+            'n_proposed_swap': int(global_counters[3]),
+            'n_proposed_overstretched': int(global_counters[4]),
+            'n_metropolis_rejected_shift': int(global_counters[5]),
+            'n_metropolis_rejected_swap': int(global_counters[6]),
+            'n_accepted_local_shift': int(global_counters[7]),
+            'n_accepted_local_swap': int(global_counters[8]),
+            'n_conflict_rejected_shift': n_conflict_rejected[0],
+            'n_conflict_rejected_swap': n_conflict_rejected[1],
+            'n_skipped_quarantined': int(global_counters[9]),
+            'sum_dE_proposed': float(global_counters[10]),
+            'sum_dE_accepted': float(global_counters[11]),
         }
 
         assert global_shifts + global_swaps*2 == len(complete_bonds_to_delete)

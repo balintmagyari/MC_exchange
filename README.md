@@ -35,7 +35,7 @@ Currently, three base modules are responsible for the primary functionalities of
 
 ## Functionalities
 
-Currently, in version 1.1.0, there are two main functions used to perform associative bond exchange reactions. Firstly,
+Currently, in version 1.2.0, there are two main functions used to perform associative bond exchange reactions. Firstly,
 the `evaluate_bond_exchange()` function is used to perform two types of bond exchange reactions between *stickers* of
 any kind. The two types of bond exchange reactions allowed are *bond shifts* and *bond swaps*. The first is an 3-body
 exchange reaction between a bonded sticker pair and a 'free' sticker where a single bond migrates, while the latter is a
@@ -51,6 +51,40 @@ according to the user's requirements.
 
 The software is designed such that it works when LAMMPS simulations are run parallel (i.e., on multiple processors).
 Communication between processes is handled by the `mpi4py` Python package. 
+
+### Exchange statistics
+
+With `return_stats=True`, `complementary_bond_exchange` returns a third element, `exchange_stats`, a dictionary of
+counters summed over all MPI ranks (identical on every rank). Counts are `int`, sums are `float`; `X` is `shift` or `swap`.
+
+| Key | Meaning |
+|---|---|
+| `n_shifts`, `n_swaps`, `total` | Successful reactions, after cross-rank conflict resolution |
+| `n_sites` | Sticker neighbourhoods that proposed a trial move (one proposal per site) |
+| `n_options` | Candidate moves enumerated across all sites |
+| `n_proposed_X` | Proposals per mechanism |
+| `n_proposed_overstretched` | Proposals with a new bond of length ≥ R0 (ΔE = +∞); always rejected and also counted in `n_metropolis_rejected_X` |
+| `n_metropolis_rejected_X` | Proposals rejected by the Metropolis test |
+| `n_accepted_local_X` | Proposals accepted on their rank, before conflict resolution |
+| `n_conflict_rejected_X` | Locally accepted moves dropped because they share an atom with a move from another rank |
+| `n_skipped_quarantined` | Sites skipped because their central sticker already reacted in this call |
+| `sum_dE_proposed` | Sum of the finite ΔE of all proposals |
+| `sum_dE_accepted` | Sum of the finite ΔE of the locally accepted moves |
+
+The counters satisfy
+
+```
+n_sites            = n_proposed_shift + n_proposed_swap
+n_proposed_X       = n_metropolis_rejected_X + n_accepted_local_X
+n_accepted_local_X = n_conflict_rejected_X + n_shifts (or n_swaps)
+```
+
+so the acceptance can be split by cause: Metropolis acceptance `n_accepted_local_X / n_proposed_X`, conflict loss
+`n_conflict_rejected_X / n_accepted_local_X`, overall acceptance `n_X / n_proposed_X`, and geometric loss
+`n_proposed_overstretched / n_sites`. The mean ΔE of proposals is
+`sum_dE_proposed / (n_sites - n_proposed_overstretched)`. This is exact unless an existing bond is longer than R0
+(LAMMPS `bond_style fene` allows this up to 2·R0 with a "FENE bond too long" warning). Such a move has ΔE = −∞, is
+accepted, and is left out of both sums.
 
 ## Example script
 
