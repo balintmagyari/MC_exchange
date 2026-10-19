@@ -7,3 +7,5 @@ dist/
 .DS_Store
 # src/example/*.dump
 src/example/*
+tests/
+.claude/
