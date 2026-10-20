@@ -194,3 +194,200 @@ def test_overstretched_old_bond_relaxing_to_finite_is_accepted():
     deleted, created = run(neigh, make_bonds([(1, 2)]), make_atoms(spec), T=1e-6,
                            bond_swap=False)
     assert deleted == {1: 2} and created == {2: 3}
+
+
+# -------------------- Zero temperature --------------------
+
+def shift_site(offset: int, origin: tuple, new_bond: float = 0.9, old_bond: float = 1.3):
+    """One shift-only site: (o+1)-(o+2) bonded, free (o+3) at new_bond from (o+2) and >= R0 from (o+1).
+
+    The only candidate move is (o+1, o+2) -> (o+2, o+3), with
+    delta U = FENE(new_bond) - FENE(old_bond).
+    """
+    x, y, z = origin
+    a, b, c = offset + 1, offset + 2, offset + 3
+    spec = {a: (x, y, z), b: (x, y + old_bond, z), c: (x, y + old_bond, z + new_bond)}
+    return spec, [(a, b)], neighbours(a, [b, c])
+
+
+def test_downhill_move_is_accepted_at_zero_temperature():
+    spec, pairs, neigh = shift_site(0, (5.0, 5.0, 5.0))
+    neigh = neigh if COMM.Get_rank() == 0 else {}
+    deleted, created = run(neigh, make_bonds(pairs), make_atoms(spec), T=0.0, bond_swap=False)
+    assert deleted == {1: 2} and created == {2: 3}
+
+    spec, pairs, neigh = swap_site(0, (5.0, 5.0, 5.0))
+    neigh = neigh if COMM.Get_rank() == 0 else {}
+    deleted, created = run(neigh, make_bonds(pairs), make_atoms(spec), T=0.0, bond_shift=False)
+    assert deleted == {1: 2, 3: 4} and created == {1: 3, 2: 4}
+
+
+def test_uphill_move_is_rejected_at_zero_temperature():
+    spec, pairs, neigh = shift_site(0, (5.0, 5.0, 5.0), new_bond=1.3, old_bond=0.97)
+    neigh = neigh if COMM.Get_rank() == 0 else {}
+    for seed in range(20):
+        deleted, created = run(neigh, make_bonds(pairs), make_atoms(spec), T=0.0, seed=seed,
+                               bond_swap=False)
+        assert deleted == {} and created == {}
+
+
+# -------------------- Exchange statistics --------------------
+
+COUNT_KEYS = ('n_shifts', 'n_swaps', 'total', 'n_sites', 'n_options',
+              'n_proposed_shift', 'n_proposed_swap', 'n_proposed_overstretched',
+              'n_metropolis_rejected_shift', 'n_metropolis_rejected_swap',
+              'n_accepted_local_shift', 'n_accepted_local_swap',
+              'n_conflict_rejected_shift', 'n_conflict_rejected_swap',
+              'n_skipped_quarantined')
+SUM_KEYS = ('sum_dE_proposed', 'sum_dE_accepted')
+
+
+def run_stats(neigh, bonds, atoms, T=1.0, seed=0, box=BOX, **kwargs):
+    return run(neigh, bonds, atoms, T=T, seed=seed, box=box, return_stats=True, **kwargs)
+
+
+def assert_identities(stats):
+    assert stats['total'] == stats['n_shifts'] + stats['n_swaps']
+    assert stats['n_sites'] == stats['n_proposed_shift'] + stats['n_proposed_swap']
+    for kind, n_done in (('shift', 'n_shifts'), ('swap', 'n_swaps')):
+        assert stats[f'n_proposed_{kind}'] == (stats[f'n_metropolis_rejected_{kind}']
+                                               + stats[f'n_accepted_local_{kind}'])
+        assert stats[f'n_accepted_local_{kind}'] == stats[f'n_conflict_rejected_{kind}'] + stats[n_done]
+    assert stats['n_proposed_overstretched'] <= (stats['n_metropolis_rejected_shift']
+                                                 + stats['n_metropolis_rejected_swap'])
+    assert stats['n_options'] >= stats['n_sites']
+
+
+def test_return_shapes_and_stat_types():
+    spec, pairs, neigh = shift_site(0, (5.0, 5.0, 5.0))
+    neigh = neigh if COMM.Get_rank() == 0 else {}
+    assert len(run(neigh, make_bonds(pairs), make_atoms(spec))) == 2
+
+    out = run_stats(neigh, make_bonds(pairs), make_atoms(spec))
+    assert len(out) == 3
+    stats = out[2]
+    assert set(stats) == set(COUNT_KEYS) | set(SUM_KEYS)
+    assert all(type(stats[k]) is int for k in COUNT_KEYS)
+    assert all(type(stats[k]) is float for k in SUM_KEYS)
+
+
+def test_shift_counters():
+    from MC_exchange.calculations import calculate_raw_fene_potential as fene
+    spec, pairs, neigh = shift_site(0, (5.0, 5.0, 5.0))
+    neigh = neigh if COMM.Get_rank() == 0 else {}
+    deleted, created, stats = run_stats(neigh, make_bonds(pairs), make_atoms(spec), bond_swap=False)
+
+    dE = fene(0.9) - fene(1.3)
+    assert deleted == {1: 2} and created == {2: 3}
+    assert stats['n_sites'] == stats['n_proposed_shift'] == stats['n_accepted_local_shift'] == 1
+    assert stats['n_shifts'] == stats['total'] == 1
+    assert stats['n_options'] == 2          # Free sticker 3 bonding to either 1 or 2
+    assert stats['sum_dE_proposed'] == pytest.approx(dE)
+    assert stats['sum_dE_accepted'] == pytest.approx(dE)
+    assert_identities(stats)
+
+
+def test_swap_counters():
+    spec, pairs, neigh = swap_site(0, (5.0, 5.0, 5.0))
+    neigh = neigh if COMM.Get_rank() == 0 else {}
+    _, _, stats = run_stats(neigh, make_bonds(pairs), make_atoms(spec), bond_shift=False)
+
+    assert stats['n_sites'] == stats['n_proposed_swap'] == stats['n_accepted_local_swap'] == 1
+    assert stats['n_swaps'] == stats['total'] == 1
+    assert stats['n_options'] == 2          # The two possible re-pairings
+    assert stats['sum_dE_accepted'] < 0
+    assert_identities(stats)
+
+
+def test_alpha_scales_summed_delta_u():
+    spec, pairs, neigh = shift_site(0, (5.0, 5.0, 5.0))
+    neigh = neigh if COMM.Get_rank() == 0 else {}
+    _, _, s1 = run_stats(neigh, make_bonds(pairs), make_atoms(spec), bond_swap=False)
+    _, _, s2 = run_stats(neigh, make_bonds(pairs), make_atoms(spec), bond_swap=False, alpha=2.0)
+    assert s2['sum_dE_proposed'] == pytest.approx(2.0 * s1['sum_dE_proposed'])
+
+
+def test_overstretched_proposal_is_counted_and_sums_stay_finite():
+    # Free sticker is >= R0 from both bonded stickers: delta U = +inf
+    spec, pairs, neigh = shift_site(0, (5.0, 5.0, 5.0), new_bond=1.6)
+    neigh = neigh if COMM.Get_rank() == 0 else {}
+    deleted, _, stats = run_stats(neigh, make_bonds(pairs), make_atoms(spec), T=1e6, bond_swap=False)
+
+    assert deleted == {}
+    assert stats['n_proposed_overstretched'] == stats['n_metropolis_rejected_shift'] == 1
+    assert stats['sum_dE_proposed'] == stats['sum_dE_accepted'] == 0.0
+    assert_identities(stats)
+
+
+def test_nan_proposal_is_rejected_and_sums_stay_finite():
+    spec = {1: (5.0, 5.0, 5.0), 2: (5.0, 6.6, 5.0), 3: (5.0, 8.2, 5.0)}
+    neigh = neighbours(1, [2, 3]) if COMM.Get_rank() == 0 else {}
+    _, _, stats = run_stats(neigh, make_bonds([(1, 2)]), make_atoms(spec), bond_swap=False)
+
+    assert stats['n_metropolis_rejected_shift'] == 1
+    assert stats['n_proposed_overstretched'] == 0
+    assert stats['sum_dE_proposed'] == stats['sum_dE_accepted'] == 0.0
+    assert_identities(stats)
+
+
+def test_minus_inf_proposal_is_accepted_and_left_out_of_sums():
+    spec = {1: (5.0, 5.0, 5.0), 2: (5.0, 6.6, 5.0), 3: (5.0, 7.5, 5.0)}
+    neigh = neighbours(1, [2, 3]) if COMM.Get_rank() == 0 else {}
+    _, _, stats = run_stats(neigh, make_bonds([(1, 2)]), make_atoms(spec), bond_swap=False)
+
+    assert stats['n_shifts'] == 1
+    assert stats['sum_dE_proposed'] == stats['sum_dE_accepted'] == 0.0
+    assert_identities(stats)
+
+
+def test_quarantined_site_is_counted():
+    # Site 1 shifts bond 1-2 to 2-3; the next site is centred on the already reacted atom 2
+    spec, pairs, neigh = shift_site(0, (5.0, 5.0, 5.0))
+    spec[4] = (5.0, 6.3, 4.1)
+    neigh = {**neigh, 2: {3: 1.0, 4: 1.0}} if COMM.Get_rank() == 0 else {}
+    _, _, stats = run_stats(neigh, make_bonds(pairs), make_atoms(spec), bond_swap=False)
+
+    assert stats['n_shifts'] == 1
+    assert stats['n_skipped_quarantined'] == 1
+    assert_identities(stats)
+
+
+@pytest.mark.parametrize('seed', [1, 2, 3])
+def test_identities_random_system(seed):
+    neigh, pairs, atoms, box = random_system(seed=seed)
+    deleted, created, stats = run_stats(neigh, make_bonds(pairs), atoms, seed=seed + COMM.Get_rank(),
+                                        box=box)
+
+    assert stats['n_sites'] > 0
+    assert stats['n_shifts'] + 2 * stats['n_swaps'] == len(deleted) == len(created)
+    assert all(s == stats for s in COMM.allgather(stats))
+    assert_identities(stats)
+
+
+def test_counts_independent_of_rank_count_for_disjoint_sites():
+    spec, pairs, neigh_all = {}, [], []
+    for s in range(8):
+        sp, pr, nb = swap_site(4 * s, (5.0 * (s + 1), 5.0, 5.0))
+        spec.update(sp); pairs += pr; neigh_all.append(nb)
+    rank, size = COMM.Get_rank(), COMM.Get_size()
+    neigh = {k: v for i, nb in enumerate(neigh_all) if i % size == rank for k, v in nb.items()}
+    _, _, stats = run_stats(neigh, make_bonds(pairs), make_atoms(spec), seed=rank, bond_shift=False)
+
+    assert stats['n_sites'] == stats['n_swaps'] == 8
+    assert stats['n_conflict_rejected_swap'] == 0
+    assert_identities(stats)
+
+
+@pytest.mark.skipif(COMM.Get_size() < 2, reason='needs at least 2 MPI ranks')
+def test_cross_rank_conflict_is_counted():
+    # Same set-up as test_cross_rank_conflict_rejects_whole_swap
+    spec, pairs, _ = swap_site(0, (5.0, 5.0, 5.0))
+    spec[5] = (5.0, 6.3, 5.9)
+    rank = COMM.Get_rank()
+    neigh = {0: neighbours(1, [2, 5]), 1: neighbours(1, [2, 3, 4])}.get(rank, {})
+    _, _, stats = run_stats(neigh, make_bonds(pairs), make_atoms(spec), seed=rank)
+
+    assert stats['n_accepted_local_shift'] == stats['n_shifts'] == 1
+    assert stats['n_accepted_local_swap'] == stats['n_conflict_rejected_swap'] == 1
+    assert stats['n_swaps'] == 0
+    assert_identities(stats)
