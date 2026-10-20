@@ -35,7 +35,7 @@ Currently, three base modules are responsible for the primary functionalities of
 
 ## Functionalities
 
-Currently, in version 1.2.0, there are two main functions used to perform associative bond exchange reactions. Firstly,
+Currently, in version 1.3.0, there are two main functions used to perform associative bond exchange reactions. Firstly,
 the `evaluate_bond_exchange()` function is used to perform two types of bond exchange reactions between *stickers* of
 any kind. The two types of bond exchange reactions allowed are *bond shifts* and *bond swaps*. The first is an 3-body
 exchange reaction between a bonded sticker pair and a 'free' sticker where a single bond migrates, while the latter is a
@@ -54,8 +54,13 @@ Communication between processes is handled by the `mpi4py` Python package.
 
 ### Exchange statistics
 
-With `return_stats=True`, `complementary_bond_exchange` returns a third element, `exchange_stats`, a dictionary of
-counters summed over all MPI ranks (identical on every rank). Counts are `int`, sums are `float`; `X` is `shift` or `swap`.
+With `return_stats=True`, `complementary_bond_exchange` and `evaluate_bond_exchange` return a third element,
+`exchange_stats`, a dictionary of counters summed over all MPI ranks (identical on every rank). Counts are `int`, sums
+are `float`; `X` is `shift` or `swap`. Both functions use the same keys, with two differences for
+`evaluate_bond_exchange`: `n_options` counts every candidate it evaluates (two per free sticker for a shift, the two
+re-pairings for a swap) because it proposes the lowest-energy candidate rather than a random one, and the ΔE sums are
+of ΔU scaled by `alpha`. In both functions, a proposal whose old and new configuration both contain a bond ≥ R0
+(ΔE = ∞ − ∞) is rejected and counted in `n_metropolis_rejected_X` but not in `n_proposed_overstretched`.
 
 | Key | Meaning |
 |---|---|
