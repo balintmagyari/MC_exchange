@@ -401,8 +401,7 @@ def evaluate_bond_exchange(sticker_neighbor_list: dict,
     """
 
     already_exchanged_atoms = set()    # Set used to prevent the same pair of atoms taking part in bond exchange more than once
-    bonds_to_delete = {}               # Final dictionary containing atom1 and atom2 as key: value pairs between which bonds should be created after bond exchange
-    bonds_to_create = {}               # Final dictionary containing atom1 and atom2 as key: value pairs between which bonds should be created after bond exchange
+    local_accepted_moves = []          # Accepted moves, each kept whole so that a swap is never split during conflict resolution
 
     # Loop through entries in neighbor list
     for atom_main, neighbors_data in sticker_neighbor_list.items():
@@ -505,7 +504,11 @@ def evaluate_bond_exchange(sticker_neighbor_list: dict,
                 P_accept = 0
 
             bond_exchange = False
-            if P_accept == 1:
+            if math.isnan(delta_U):
+                # inf - inf: the old and the new bond are both >= R0, so the move is rejected
+                bond_exchange = False
+
+            elif P_accept == 1:
                 bond_exchange = True
                 # print('Bond exchange happens naturally due to a negative delta U.')
 
@@ -519,25 +522,17 @@ def evaluate_bond_exchange(sticker_neighbor_list: dict,
                 # print(f'Exchange granted!\nExchange between {id1}-{id2} original to {new_sticker1}-{new_sticker2}', flush=True)
                 id1 = int(id1)
                 id2 = int(id2)
-                new_sticker1 = int(new_sticker1)
-                new_sticker2 = int(new_sticker2)
+                new_sticker1 = int(new_sticker1)    # Always id1 or id2
+                new_sticker2 = int(new_sticker2)    # The free sticker
 
-                bonds_to_delete[min(id1, id2)] = max(id1, id2)
-                bonds_to_create[min(new_sticker1, new_sticker2)] = max(new_sticker1, new_sticker2)
+                local_accepted_moves.append({
+                    'old_bonds': [(id1, id2)],
+                    'new_bonds': [(new_sticker1, new_sticker2)],
+                    'involved_atoms': [id1, id2, new_sticker2]
+                })
 
-                # print(f'Bonds to delete on proc {comm.Get_rank()}: {bonds_to_delete}', flush=True)
-                # print(f'Bonds to create on proc {comm.Get_rank()}: {bonds_to_create}', flush=True)
-
-                # Add originally bonded sticker that is now free to the already_exchanged_atoms list so that it is not considered for another exchange
-                if new_sticker1 == id1:
-                    already_exchanged_atoms.add(id2)
-                    already_exchanged_atoms.add(id1)
-                else:
-                    warnings.warn('Neither atoms of the new bond has been bonded before!')
-
-                # Add newly bonded atoms to already_exchanged_atoms
-                already_exchanged_atoms.add(new_sticker1)
-                already_exchanged_atoms.add(new_sticker2)
+                # Quarantine the originally bonded pair and the free sticker so that none of them is considered for another exchange
+                already_exchanged_atoms.update([id1, id2, new_sticker2])
 
         if paired_bond_exchange and bond_swap:
             id1, id2 = linked_pairs[0]
@@ -595,7 +590,11 @@ def evaluate_bond_exchange(sticker_neighbor_list: dict,
                 P_accept = 0
 
             bond_exchange = False
-            if P_accept == 1:
+            if math.isnan(delta_U):
+                # inf - inf: the old and the new configuration both contain a bond >= R0, so the move is rejected
+                bond_exchange = False
+
+            elif P_accept == 1:
                 bond_exchange = True
                 # print('Bond exchange happens naturally due to a negative delta U.')
 
@@ -608,49 +607,48 @@ def evaluate_bond_exchange(sticker_neighbor_list: dict,
             if bond_exchange:
                 id1 = int(id1); id2 = int(id2); id3 = int(id3); id4 = int(id4)
 
-                # Add original bonds to delete to dicitonary, organize such that key is smaller than value in the dictionary
-                bonds_to_delete[min(id1, id2)] = max(id1, id2)
-                bonds_to_delete[min(id3, id4)] = max(id3, id4)
-
-                # Add original bonds to create to dicitonary, organize such that key is smaller than value in the dictionary
-                bonds_to_create[min(new_id1, new_id2)] = max(new_id1, new_id2)
-                bonds_to_create[min(new_id3, new_id4)] = max(new_id3, new_id4)
+                # Both deletions and both creations are kept in one move, so that the swap is applied or rejected as a whole
+                local_accepted_moves.append({
+                    'old_bonds': [(id1, id2), (id3, id4)],
+                    'new_bonds': [(new_id1, new_id2), (new_id3, new_id4)],
+                    'involved_atoms': [id1, id2, id3, id4]
+                })
 
                 # Add newly bonded atoms to already_exchanged_atoms
-                already_exchanged_atoms.add(new_id1)
-                already_exchanged_atoms.add(new_id2)
-                already_exchanged_atoms.add(new_id3)
-                already_exchanged_atoms.add(new_id4)
+                already_exchanged_atoms.update([id1, id2, id3, id4])
 
 # -------------------- Gathering data from each process, combining them into one complete set of data and broadcasting it back to all processes--------------------
 
-    bonds_to_delete_list = list(bonds_to_delete.items())        # Create list to prevent silent overwriting when combining dictionaries
-    bonds_to_create_list = list(bonds_to_create.items())        # Create list to prevent silent overwriting when combining dictionaries
-
-    gathered_bonds_to_delete = comm.gather(bonds_to_delete_list, root=0)
-    gathered_bonds_to_create = comm.gather(bonds_to_create_list, root=0)
+    # Gather the lists of entire moves from all MPI ranks
+    gathered_moves = comm.gather(local_accepted_moves, root=0)
 
     mpi_rank = comm.Get_rank()
     if mpi_rank == 0:
-        assert gathered_bonds_to_delete is not None # For type checker
-        assert gathered_bonds_to_create is not None # For type checker
-        # Flatten lists
-        all_bonds_to_delete = [pair for sublist in gathered_bonds_to_delete for pair in sublist]
-        all_bonds_to_create = [pair for sublist in gathered_bonds_to_create for pair in sublist]
-        
-        # Conflict resolution: ensure each atom appears only once
+        assert gathered_moves is not None # For type checker
+
+        # Flatten the list of moves
+        all_moves = [move for sublist in gathered_moves for move in sublist]
+
         used_atoms = set()
         filtered_bonds_to_delete = []
         filtered_bonds_to_create = []
 
-        for (a1, a2), (b1, b2) in zip(all_bonds_to_delete, all_bonds_to_create):
-            if a1 in used_atoms or a2 in used_atoms or b1 in used_atoms or b2 in used_atoms:
+        # Conflict resolution at the MOVE level: a move sharing any atom with an already approved move
+        # (from another rank) is rejected as a whole, so a swap is never applied halfway
+        for move in all_moves:
+            if any(atom in used_atoms for atom in move['involved_atoms']):
                 continue
-            filtered_bonds_to_delete.append((a1, a2))
-            filtered_bonds_to_create.append((b1, b2))
-            used_atoms.update([a1, a2, b1, b2])
 
-        # Convert back to dicts if needed
+            # Organize such that key is smaller than value in the final dictionaries
+            for ob in move['old_bonds']:
+                filtered_bonds_to_delete.append((min(ob), max(ob)))
+
+            for nb in move['new_bonds']:
+                filtered_bonds_to_create.append((min(nb), max(nb)))
+
+            used_atoms.update(move['involved_atoms'])
+
+        # Convert back to dicts
         complete_bonds_to_delete = dict(filtered_bonds_to_delete)
         complete_bonds_to_create = dict(filtered_bonds_to_create)
     else:
