@@ -35,7 +35,7 @@ Currently, three base modules are responsible for the primary functionalities of
 
 ## Functionalities
 
-Currently, in version 1.2.0, there are two main functions used to perform associative bond exchange reactions. Firstly,
+Currently, in version 1.2.1, there are two main functions used to perform associative bond exchange reactions. Firstly,
 the `evaluate_bond_exchange()` function is used to perform two types of bond exchange reactions between *stickers* of
 any kind. The two types of bond exchange reactions allowed are *bond shifts* and *bond swaps*. The first is an 3-body
 exchange reaction between a bonded sticker pair and a 'free' sticker where a single bond migrates, while the latter is a
