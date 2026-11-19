@@ -45,8 +45,8 @@ def calculate_distance_pbc(box_dims: np.ndarray,
         atom_2_z = atom_2_z.item()
 
     # Convert inputs to NumPy arrays
-    atom_1 = np.array([atom_1_x, atom_1_y, atom_1_z])
-    atom_2 = np.array([atom_2_x, atom_2_y, atom_2_z])
+    atom_1 = np.array([atom_1_x, atom_1_y, atom_1_z], dtype=np.float64)    # float: integer input would
+    atom_2 = np.array([atom_2_x, atom_2_y, atom_2_z], dtype=np.float64)    # break the in-place PBC shift
     box_lengths = np.array([
         box_dims[1] - box_dims[0],
         box_dims[3] - box_dims[2],
