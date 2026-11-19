@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "MC_exchange"
-version = "1.3.0"
+version = "1.3.1"
 authors = [
   { name="Balint Magyari", email="balint.magyari@unina.it" },
 ]
@@ -14,7 +14,8 @@ requires-python = ">=3.12"
 dependencies = [
   "lammps",
   "mpi4py",
-  "numpy"
+  "numpy>=1.26",
+  "scipy>=1.11"
 ]
 classifiers = [
     "Programming Language :: Python :: 3",

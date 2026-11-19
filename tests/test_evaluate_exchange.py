@@ -79,7 +79,7 @@ def swap_site(offset: int, origin: tuple):
 
 def random_system(n_stickers=600, box=10.0, bonded_fraction=0.6, rc=1.12, seed=1):
     """Random sticker melt with a brute-force neighbour list (identical on every rank),
-    split into contiguous chunks across ranks like MC_exchange.neigh_list does."""
+    split into contiguous chunks across ranks (MC_exchange.neigh_list splits spatially)."""
     rng = np.random.default_rng(seed)
     pos = rng.uniform(0, box, size=(n_stickers, 3))
     ids = np.arange(1, n_stickers + 1)
