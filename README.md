@@ -35,32 +35,33 @@ Currently, three base modules are responsible for the primary functionalities of
 
 ## Functionalities
 
-Currently, in version 1.3.1, there are two main functions used to perform associative bond exchange reactions. Firstly,
-the `evaluate_bond_exchange()` function is used to perform two types of bond exchange reactions between *stickers* of
-any kind. The two types of bond exchange reactions allowed are *bond shifts* and *bond swaps*. The first is an 3-body
-exchange reaction between a bonded sticker pair and a 'free' sticker where a single bond migrates, while the latter is a
-4-body exchange between two pairs of bonded stickers requiring the rearrangement of two bonds. In either case, the
-number of total bonds in the system does not change.
+Currently, in version 1.4.0, associative bond exchange reactions are performed by `complementary_bond_exchange()`.
+Two types of bond exchange reactions are allowed between *stickers*: *bond shifts* and *bond swaps*. The first is a
+3-body exchange reaction between a bonded sticker pair and a 'free' sticker where a single bond migrates, while the
+latter is a 4-body exchange between two pairs of bonded stickers requiring the rearrangement of two bonds. In either
+case, the number of total bonds in the system does not change.
 
-Secondly, the `complementary_bond_exchange` function, as the name suggests, allows reactions to occur between stickers
-that are of different types (i.e., A-B crosslinks). In the function, these types can be defined according to LAMMPS'
-numerical type convention under arguments `sticker_types_A` and `sticker_types_B`.
+By default any sticker may bond to any other sticker (*any-pairing mode*). To restrict reactions to stickers of
+different types (i.e., A-B crosslinks), give the LAMMPS atom types of the two groups as `sticker_types_A` and
+`sticker_types_B`.
 
-Both of the above mentioned bond exchange functions allow *bond shifts* and *bond swaps* to be turned on and off
-according to the user's requirements.
+`evaluate_bond_exchange()` is deprecated and will be removed in version 2.0.0. It now forwards to
+`complementary_bond_exchange()` in any-pairing mode, so its trial move is drawn at random from all candidates instead of
+being the lowest-energy one; its `alpha` and `P_coeff` arguments are ignored.
+
+*Bond shifts* and *bond swaps* can each be turned on and off with `bond_shift` and `bond_swap`.
 
 The software is designed such that it works when LAMMPS simulations are run parallel (i.e., on multiple processors).
 Communication between processes is handled by the `mpi4py` Python package. 
 
 ### Exchange statistics
 
-With `return_stats=True`, `complementary_bond_exchange` and `evaluate_bond_exchange` return a third element,
-`exchange_stats`, a dictionary of counters summed over all MPI ranks (identical on every rank). Counts are `int`, sums
-are `float`; `X` is `shift` or `swap`. Both functions use the same keys, with two differences for
-`evaluate_bond_exchange`: `n_options` counts every candidate it evaluates (two per free sticker for a shift, the two
-re-pairings for a swap) because it proposes the lowest-energy candidate rather than a random one, and the ΔE sums are
-of ΔU scaled by `alpha`. In both functions, a proposal whose old and new configuration both contain a bond ≥ R0
-(ΔE = ∞ − ∞) is rejected and counted in `n_metropolis_rejected_X` but not in `n_proposed_overstretched`.
+With `return_stats=True`, `complementary_bond_exchange` returns a third element, `exchange_stats`, a dictionary of
+counters summed over all MPI ranks (identical on every rank). Counts are `int`, sums are `float`; `X` is `shift` or
+`swap`. In any-pairing mode `n_options` counts two candidates per bonded pair and free sticker for a shift (the free
+sticker may bond to either partner) and the two re-pairings for a swap; in A/B mode one each. A proposal whose old and
+new configuration both contain a bond ≥ R0 (ΔE = ∞ − ∞) is rejected and counted in `n_metropolis_rejected_X` but not in
+`n_proposed_overstretched`. At T = 0 only moves with ΔE ≤ 0 are accepted.
 
 | Key | Meaning |
 |---|---|
