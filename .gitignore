@@ -9,3 +9,4 @@ dist/
 src/example/*
 tests/
 .claude/
+BUG_neigh_list_periodic_faces.md
