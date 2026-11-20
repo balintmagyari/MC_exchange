@@ -63,8 +63,8 @@ def loop(lmp: lammps,
         # -------------------- Bond exchange --------------------
         temp = lmp.extract_compute('thermo_temp', 0, 0)
         assert isinstance(temp, float)
-        complete_bonds_to_delete, complete_bonds_to_create = mc.evaluate_bond_exchange(local_neigh_list, cross_links, stickers, box_dims, 
-                                                                                      alpha=alpha, P_coeff=P_coeff, T=temp, bond_shift=True, bond_swap=True)
+        complete_bonds_to_delete, complete_bonds_to_create = mc.complementary_bond_exchange(local_neigh_list, cross_links, stickers, box_dims,
+                                                                                             T=temp, bond_shift=True, bond_swap=True)
         n_bonds_to_delete = len(complete_bonds_to_delete)
         n_bonds_to_create = len(complete_bonds_to_create)
         

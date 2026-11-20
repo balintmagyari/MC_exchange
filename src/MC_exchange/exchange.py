@@ -78,7 +78,7 @@ def perform_bond_swap(sticker_neighbor_list: dict,
     """
     warnings.warn(
         "perform_bond_swap() is deprecated and will be removed in version 2.0.0."
-        "Use evaluate_bond_exchange() instead.",
+        " Use complementary_bond_exchange() instead.",
         category=DeprecationWarning,
         stacklevel=2
     )
@@ -361,456 +361,37 @@ def evaluate_bond_exchange(sticker_neighbor_list: dict,
                           return_stats: bool = False
                           ) -> tuple:
     """
-    Evaluate bond exchange dynamics on the local process, gather combined data on which
-    bonds to delete and create, and broadcast that combined data to all processes.
+    Deprecated: forwards to complementary_bond_exchange() in any-pairing mode (no sticker types),
+    where any sticker may bond to any other sticker.
 
-    Accepted moves are gathered whole on the root process, where a move sharing an atom with
-    a move from another rank is rejected as a unit, so a swap is never applied halfway.
+    Behaviour changed in 1.4.0: a trial move is now drawn uniformly at random from all candidate
+    shifts and swaps of a neighbourhood (as in complementary_bond_exchange()), instead of always
+    proposing the lowest-energy candidate. alpha and P_coeff are ignored.
 
-    If return_stats = True, statistics about the number of exchanges is returned.
-
-    Parameters
-    ---------
-    sticker_neighbor_list : dict
-        Dictionary containing the local neighbor list on the current process.
-    bonds : np.ndarray
-        Bond data organized as a structured numpy array with columns: ['type', 'atom 1', 'atom 2'].
-    atoms : np.ndarray
-        Atom data organized as a structured numpy array with columns: ['id', 'type', 'mol', 'x', 'y', 'z'].
-    box_dims : np.ndarray
-        Box dimensions in the form: [xlo, xhi, ylo, yhi, zlo, zhi].
-    T : float
-        Current temperature of the simulation.
-    alpha : float
-        Arbitrary parameter used to control the energy barrier, similar to the role of a catalyst during a chemical reaction.
-    P_coeff : float
-        Defines the maximum of the range between 0 and P_coeff, from which a random number is drawn during the
-        Monte Carlo exchange. Default is 1.0.
-    kB : float
-        Boltzmann's constant. Default is 1.0.
-    bond_shift : bool
-        Whether to allow bond shift bond exchange reactions (BERs) to occur. These BERs occur between a bonded pair of
-        stickers and a free sticker.
-    bond_swap : bool
-        Whether to allow bond swap bond exchange reactions (BERs) to occur. These BERs occur between two pairs of 
-        bonded stickers where bonding partners are swapped.
-    comm : MPI.Intracomm
-        MPI communicator. Default is MPI.COMM_WORLD.
-    return_stats : bool
-        If True, returns a dictionary of exchange statistics with the same keys as
-        complementary_bond_exchange(). Default is False.
-
-    Returns
-    -------
-    tuple
-        If return_stats is False:
-            - bonds_to_delete (dict): Keys and values represent the lower and higher IDs of bonds to break.
-            - bonds_to_create (dict): Keys and values represent the lower and higher IDs of new bonds to form.
-
-        If return_stats is True:
-            - bonds_to_delete (dict): Dictionary of bonds targeted for deletion.
-            - bonds_to_create (dict): Dictionary of bonds targeted for creation.
-            - exchange_stats (dict): Global values, summed over all ranks and identical on every rank.
-              Counts are int, sums are float. X is 'shift' or 'swap'.
-                'n_shifts', 'n_swaps', 'total': successful reactions after conflict resolution.
-                'n_sites': neighbourhoods that proposed a trial move (one proposal each).
-                'n_options': candidate moves evaluated across all sites. A shift site has two per
-                    free sticker (it may bond to either sticker of the pair), a swap site has two
-                    (the two re-pairings). The lowest-energy candidate is the one proposed.
-                'n_proposed_X': proposals per mechanism.
-                'n_proposed_overstretched': proposals with delta U = +inf (a new bond >= R0);
-                    always rejected and also included in 'n_metropolis_rejected_X'.
-                'n_metropolis_rejected_X': proposals rejected by the Metropolis test, including
-                    those with delta U = nan (old and new configuration both contain a bond >= R0).
-                'n_accepted_local_X': proposals accepted on their rank, before conflict resolution.
-                'n_conflict_rejected_X': locally accepted moves dropped for sharing an atom with a
-                    move from another rank.
-                'n_skipped_quarantined': sites skipped because their central sticker had already
-                    reacted in this call.
-                'sum_dE_proposed': sum of finite delta U (scaled by alpha) over all proposals.
-                'sum_dE_accepted': sum of finite delta U (scaled by alpha) over locally accepted moves.
-              These identities hold:
-                n_sites = n_proposed_shift + n_proposed_swap
-                n_proposed_X = n_metropolis_rejected_X + n_accepted_local_X
-                n_accepted_local_X = n_conflict_rejected_X + n_shifts (or n_swaps)
+    Parameters and return values are those of complementary_bond_exchange(); alpha and P_coeff
+    are accepted only for backwards compatibility.
     """
-
-    already_exchanged_atoms = set()    # Set used to prevent the same pair of atoms taking part in bond exchange more than once
-    local_accepted_moves = []          # Accepted moves, each kept whole so that a swap is never split during conflict resolution
-
-    # Local acceptance counters, as in complementary_bond_exchange(). Shift/swap pairs are indexed by kind: 0 = shift, 1 = swap
-    n_sites = 0                         # Neighbourhoods that proposed a trial move
-    n_options = 0                       # Candidate moves evaluated across all sites
-    n_proposed = [0, 0]
-    n_overstretched = 0                 # Proposals with an infinite delta U (a new bond >= R0)
-    n_metropolis_rejected = [0, 0]
-    n_accepted_local = [0, 0]
-    n_skipped_quarantined = 0
-    sum_dE_proposed = 0.0               # Finite delta U only
-    sum_dE_accepted = 0.0
-
-    # Loop through entries in neighbor list
-    for atom_main, neighbors_data in sticker_neighbor_list.items():
-        sticker_ids = []                # Combined list of sticker IDs, will include atom_main
-        stopper_bond_exchange = False   # Boolean whether to perform BER including 1 pair of bonded stickers and a nearby 'free' sticker
-        paired_bond_exchange = False    # Boolean whether to perform BER between two pairs of bonded sticker
-
-        if atom_main in already_exchanged_atoms:    # Skip to next iteration of atom_main has already been exchanged
-            n_skipped_quarantined += 1
-            continue
-
-        sticker_ids.append(atom_main)
-        for neighbor_id in neighbors_data.keys():
-            if neighbor_id in already_exchanged_atoms or neighbor_id < atom_main:      # Skip to next iteration of neighbor_id has already been exchanged or is lower in value than atom_main to prevent double counting
-                continue
-            sticker_ids.append(neighbor_id)
-
-        n_stickers = len(sticker_ids)   # Number of stickers that can potentially be exchanged
-
-        # Continue with next iteration if the total number of stickers (including atom_main) is not enough for BER.
-        if n_stickers < 3:
-            continue
-
-        linked_pairs = []   # List holding data on which atoms are bonded from the sticker_ids list
-        for id1, id2 in combinations(sticker_ids, 2):
-            # TODO: check this statement. Something unexpected happens where 
-            if np.any(
-                ((bonds['atom 1'] == id1) & (bonds['atom 2'] == id2)) |
-                ((bonds['atom 1'] == id2) & (bonds['atom 2'] == id1))
-            ):
-                linked_pairs.append((id1, id2))
-                # print(f'Linked pair appended: ({id1, id2})', flush=True)
-
-        n_pairs = len(linked_pairs)
-
-        if n_pairs == 0:      # Continue with next iteration of main loop if no pair is found
-            continue
-
-        elif n_pairs == 1:      # Evaluate 3 sticker bond exchange if only 1 pair of sticker is linked
-            stopper_bond_exchange = True
-
-        elif n_pairs == 2:       # Evaluate 4 sticker BER if two pairs of sticker is linked
-            id1, id2 = linked_pairs[0]
-            id3, id4 = linked_pairs[1]
-
-            # Test to see if the four atom IDs are unique
-            if len({id1, id2, id3, id4}) == 4:
-                paired_bond_exchange = True
-            else:
-                pass
-                # print(f'\nWrongly made linked_pairs: {linked_pairs}', flush=True)
-                # print(f'Sticker IDs: {sticker_ids}\n', flush=True)
-
-        if stopper_bond_exchange and bond_shift:
-            id1, id2 = linked_pairs[0]
-
-            # Remove bonded sticker ids from sticker_ids list
-            sticker_ids.remove(id1); sticker_ids.remove(id2)
-
-            sticker_ids = [s for s in sticker_ids if not np.any((bonds['atom 1'] == s) | (bonds['atom 2'] == s))]
-
-            if len(sticker_ids) == 0: # Continue to next iteration of main loop if no free stickers are left to consider for BER
-                continue
-
-            # Saving coordinates of id1 and id2 atoms for later use
-            id1_data = atoms[atoms['id'] == id1]
-            id1_x = id1_data['x']; id1_y = id1_data['y']; id1_z = id1_data['z']
-            id2_data = atoms[atoms['id'] == id2]
-            id2_x = id2_data['x']; id2_y = id2_data['y']; id2_z = id2_data['z']
-
-            distances = {}
-            distances[f'{id1}-{id2}'] = calculate_distance_pbc(box_dims, id1_x, id1_y, id1_z, id2_x, id2_y, id2_z)
-
-            fene_old = calculate_raw_fene_potential(distances[f'{id1}-{id2}'])
-            new_fene_potentials = []        # FENE potentials of all possible NEW configurations
-            for free_sticker in sticker_ids:
-                free_sticker_data = atoms[atoms['id'] == free_sticker]
-                free_sticker_x = free_sticker_data['x']; free_sticker_y = free_sticker_data['y']; free_sticker_z = free_sticker_data['z']
-
-                distances[f'{id1}-{free_sticker}'] = calculate_distance_pbc(box_dims, id1_x, id1_y, id1_z, free_sticker_x, free_sticker_y, free_sticker_z)
-                distances[f'{id2}-{free_sticker}'] = calculate_distance_pbc(box_dims, id2_x, id2_y, id2_z, free_sticker_x, free_sticker_y, free_sticker_z)
-
-                potential1 = calculate_raw_fene_potential(distances[f'{id1}-{free_sticker}'])
-                potential2 = calculate_raw_fene_potential(distances[f'{id2}-{free_sticker}'])
-
-                new_fene_potentials.append([id1, free_sticker, potential1])
-                new_fene_potentials.append([id2, free_sticker, potential2])
-            
-            new_fene_potentials = np.array(new_fene_potentials)
-
-            min_row_idx = np.argmin(new_fene_potentials[:, 2])
-            min_row = new_fene_potentials[min_row_idx]
-            new_sticker1 = min_row[0]; new_sticker2 = min_row[1]; fene_new = min_row[2]
-
-            delta_U = alpha * (fene_new - fene_old)
-
-            n_sites += 1
-            n_options += len(new_fene_potentials)
-            n_proposed[0] += 1
-
-            # Only finite delta U is summed. +inf (a new bond >= R0) is always rejected and counted as overstretched.
-            dU_finite = math.isfinite(delta_U)
-            if dU_finite:
-                sum_dE_proposed += delta_U
-            elif delta_U > 0:
-                n_overstretched += 1
-
-            # Acceptance probability. If change in potential is negative, the acceptance probability automatically becomes 1.0, also at T = 0.
-            if delta_U <= 0:
-                P_accept = 1.0
-            elif T != 0:
-                P_accept = np.exp(-delta_U/(kB * T))
-            else:
-                P_accept = 0
-
-            bond_exchange = False
-            if math.isnan(delta_U):
-                # inf - inf: the old and the new bond are both >= R0, so the move is rejected
-                bond_exchange = False
-
-            elif P_accept == 1:
-                bond_exchange = True
-                # print('Bond exchange happens naturally due to a negative delta U.')
-
-            elif P_accept > 0:
-                ran = random.uniform(0, P_coeff)
-                if P_accept >= ran:
-                    bond_exchange = True
-                    # print('Bond exchange happens due to Metropolis acceptance criterion.')
-
-            if not bond_exchange:
-                n_metropolis_rejected[0] += 1
-
-            if bond_exchange:
-                n_accepted_local[0] += 1
-                if dU_finite:
-                    sum_dE_accepted += delta_U
-
-                # print(f'Exchange granted!\nExchange between {id1}-{id2} original to {new_sticker1}-{new_sticker2}', flush=True)
-                id1 = int(id1)
-                id2 = int(id2)
-                new_sticker1 = int(new_sticker1)    # Always id1 or id2
-                new_sticker2 = int(new_sticker2)    # The free sticker
-
-                local_accepted_moves.append({
-                    'old_bonds': [(id1, id2)],
-                    'new_bonds': [(new_sticker1, new_sticker2)],
-                    'involved_atoms': [id1, id2, new_sticker2]
-                })
-
-                # Quarantine the originally bonded pair and the free sticker so that none of them is considered for another exchange
-                already_exchanged_atoms.update([id1, id2, new_sticker2])
-
-        if paired_bond_exchange and bond_swap:
-            id1, id2 = linked_pairs[0]
-            id3, id4 = linked_pairs[1]
-
-            # print('Traditional bond exchange considered!', flush=True)
-
-            # Saving coordinates of id1 and id2 atoms for later use
-            id1_data = atoms[atoms['id'] == id1]
-            id1_x = id1_data['x']; id1_y = id1_data['y']; id1_z = id1_data['z']
-            id2_data = atoms[atoms['id'] == id2]
-            id2_x = id2_data['x']; id2_y = id2_data['y']; id2_z = id2_data['z']
-            id3_data = atoms[atoms['id'] == id3]
-            id3_x = id3_data['x']; id3_y = id3_data['y']; id3_z = id3_data['z']
-            id4_data = atoms[atoms['id'] == id4]
-            id4_x = id4_data['x']; id4_y = id4_data['y']; id4_z = id4_data['z']
-
-            # Remove bonded sticker ids from sticker_ids list
-            sticker_ids.remove(id1); sticker_ids.remove(id2)
-
-            distances = {}
-            distances[f'{id1}-{id2}'] = calculate_distance_pbc(box_dims, id1_x, id1_y, id1_z, id2_x, id2_y, id2_z)
-            distances[f'{id1}-{id3}'] = calculate_distance_pbc(box_dims, id1_x, id1_y, id1_z, id3_x, id3_y, id3_z)
-            distances[f'{id1}-{id4}'] = calculate_distance_pbc(box_dims, id1_x, id1_y, id1_z, id4_x, id4_y, id4_z)
-            distances[f'{id2}-{id3}'] = calculate_distance_pbc(box_dims, id2_x, id2_y, id2_z, id3_x, id3_y, id3_z)
-            distances[f'{id2}-{id4}'] = calculate_distance_pbc(box_dims, id2_x, id2_y, id2_z, id4_x, id4_y, id4_z)
-            distances[f'{id3}-{id4}'] = calculate_distance_pbc(box_dims, id3_x, id3_y, id3_z, id4_x, id4_y, id4_z)
-            
-            fene_1to2 = calculate_raw_fene_potential(distances[f'{id1}-{id2}'])
-            fene_1to3 = calculate_raw_fene_potential(distances[f'{id1}-{id3}'])
-            fene_1to4 = calculate_raw_fene_potential(distances[f'{id1}-{id4}'])
-            fene_2to3 = calculate_raw_fene_potential(distances[f'{id2}-{id3}'])
-            fene_2to4 = calculate_raw_fene_potential(distances[f'{id2}-{id4}'])
-            fene_3to4 = calculate_raw_fene_potential(distances[f'{id3}-{id4}'])
-
-            U_old = fene_1to2 + fene_3to4; U_new1 = fene_1to3 + fene_2to4; U_new2 = fene_1to4 + fene_2to3
-
-            if U_new1 <= U_new2:
-                U_new = U_new1
-                new_id1 = int(id1); new_id2 = int(id3)
-                new_id3 = int(id2); new_id4 = int(id4)
-            else:
-                U_new = U_new2
-                new_id1 = int(id1); new_id2 = int(id4) 
-                new_id3 = int(id2); new_id4 = int(id3)
-
-            # U_new = min(U_new1, U_new2)
-
-            delta_U = alpha * (U_new - U_old)
-
-            n_sites += 1
-            n_options += 2              # The two possible re-pairings
-            n_proposed[1] += 1
-
-            # Only finite delta U is summed. +inf (a new bond >= R0) is always rejected and counted as overstretched.
-            dU_finite = math.isfinite(delta_U)
-            if dU_finite:
-                sum_dE_proposed += delta_U
-            elif delta_U > 0:
-                n_overstretched += 1
-
-            # Acceptance probability. If change in potential is negative, the acceptance probability automatically becomes 1.0, also at T = 0.
-            if delta_U <= 0:
-                P_accept = 1.0
-            elif T != 0:
-                P_accept = np.exp(-delta_U/(kB * T))
-            else:
-                P_accept = 0
-
-            bond_exchange = False
-            if math.isnan(delta_U):
-                # inf - inf: the old and the new configuration both contain a bond >= R0, so the move is rejected
-                bond_exchange = False
-
-            elif P_accept == 1:
-                bond_exchange = True
-                # print('Bond exchange happens naturally due to a negative delta U.')
-
-            elif P_accept > 0:
-                ran = random.uniform(0, P_coeff)
-                if P_accept >= ran:
-                    bond_exchange = True
-                    # print('Bond exchange happens due to Metropolis acceptance criterion.')
-
-            if not bond_exchange:
-                n_metropolis_rejected[1] += 1
-
-            if bond_exchange:
-                n_accepted_local[1] += 1
-                if dU_finite:
-                    sum_dE_accepted += delta_U
-
-                id1 = int(id1); id2 = int(id2); id3 = int(id3); id4 = int(id4)
-
-                # Both deletions and both creations are kept in one move, so that the swap is applied or rejected as a whole
-                local_accepted_moves.append({
-                    'old_bonds': [(id1, id2), (id3, id4)],
-                    'new_bonds': [(new_id1, new_id2), (new_id3, new_id4)],
-                    'involved_atoms': [id1, id2, id3, id4]
-                })
-
-                # Add newly bonded atoms to already_exchanged_atoms
-                already_exchanged_atoms.update([id1, id2, id3, id4])
-
-# -------------------- Gathering data from each process, combining them into one complete set of data and broadcasting it back to all processes--------------------
-
-    # Gather the lists of entire moves from all MPI ranks
-    gathered_moves = comm.gather(local_accepted_moves, root=0)
-
-    mpi_rank = comm.Get_rank()
-    if mpi_rank == 0:
-        assert gathered_moves is not None # For type checker
-
-        # Flatten the list of moves
-        all_moves = [move for sublist in gathered_moves for move in sublist]
-
-        used_atoms = set()
-        filtered_bonds_to_delete = []
-        filtered_bonds_to_create = []
-
-        global_shifts = 0
-        global_swaps = 0
-        n_conflict_rejected = [0, 0]    # Counted independently, so n_accepted_local = n_conflict_rejected + n_X is a real check
-
-        # Conflict resolution at the MOVE level: a move sharing any atom with an already approved move
-        # (from another rank) is rejected as a whole, so a swap is never applied halfway
-        for move in all_moves:
-            if any(atom in used_atoms for atom in move['involved_atoms']):
-                n_conflict_rejected[0 if len(move['old_bonds']) == 1 else 1] += 1
-                continue
-
-            # Organize such that key is smaller than value in the final dictionaries
-            for ob in move['old_bonds']:
-                filtered_bonds_to_delete.append((min(ob), max(ob)))
-
-            for nb in move['new_bonds']:
-                filtered_bonds_to_create.append((min(nb), max(nb)))
-
-            used_atoms.update(move['involved_atoms'])
-
-            # Count the officially approved move
-            if len(move['old_bonds']) == 1:
-                global_shifts += 1
-            elif len(move['old_bonds']) == 2:
-                global_swaps += 1
-
-        # Convert back to dicts
-        complete_bonds_to_delete = dict(filtered_bonds_to_delete)
-        complete_bonds_to_create = dict(filtered_bonds_to_create)
-    else:
-        complete_bonds_to_delete = {}
-        complete_bonds_to_create = {}
-
-        global_shifts = 0
-        global_swaps = 0
-        n_conflict_rejected = [0, 0]
-
-    # Broadcasting bonds to delete/create dictionaries
-    complete_bonds_to_delete = comm.bcast(complete_bonds_to_delete, root=0)
-    complete_bonds_to_create = comm.bcast(complete_bonds_to_create, root=0)
-
-    # Broadcast the final statistics, including the conflict counters only known on root
-    global_shifts, global_swaps, n_conflict_rejected = comm.bcast(
-        (global_shifts, global_swaps, n_conflict_rejected), root=0)
-
-    # Sum the local acceptance counters over all ranks in one collective. Every rank must reach it,
-    # so it is unconditional. float64 is exact for integer counts up to 2**53.
-    local_counters = np.array([n_sites, n_options,
-                               n_proposed[0], n_proposed[1],
-                               n_overstretched,
-                               n_metropolis_rejected[0], n_metropolis_rejected[1],
-                               n_accepted_local[0], n_accepted_local[1],
-                               n_skipped_quarantined,
-                               sum_dE_proposed, sum_dE_accepted], dtype=np.float64)
-    global_counters = np.empty_like(local_counters)
-    comm.Allreduce(local_counters, global_counters, op=MPI.SUM)
-
-    if return_stats:
-        exchange_stats = {
-            'n_shifts': global_shifts,
-            'n_swaps': global_swaps,
-            'total': global_shifts + global_swaps,
-            'n_sites': int(global_counters[0]),
-            'n_options': int(global_counters[1]),
-            'n_proposed_shift': int(global_counters[2]),
-            'n_proposed_swap': int(global_counters[3]),
-            'n_proposed_overstretched': int(global_counters[4]),
-            'n_metropolis_rejected_shift': int(global_counters[5]),
-            'n_metropolis_rejected_swap': int(global_counters[6]),
-            'n_accepted_local_shift': int(global_counters[7]),
-            'n_accepted_local_swap': int(global_counters[8]),
-            'n_conflict_rejected_shift': n_conflict_rejected[0],
-            'n_conflict_rejected_swap': n_conflict_rejected[1],
-            'n_skipped_quarantined': int(global_counters[9]),
-            'sum_dE_proposed': float(global_counters[10]),
-            'sum_dE_accepted': float(global_counters[11]),
-        }
-
-        assert global_shifts + global_swaps*2 == len(complete_bonds_to_delete)
-
-        return complete_bonds_to_delete, complete_bonds_to_create, exchange_stats
-    else:
-        return complete_bonds_to_delete, complete_bonds_to_create
+    warnings.warn(
+        "evaluate_bond_exchange() is deprecated and will be removed in version 2.0.0. "
+        "Use complementary_bond_exchange() instead (omit the sticker types for any-pairing mode).",
+        category=DeprecationWarning,
+        stacklevel=2
+    )
+    if alpha != 1.0 or P_coeff != 1.0:
+        warnings.warn("alpha and P_coeff are no longer used and are ignored.",
+                      category=DeprecationWarning, stacklevel=2)
+
+    return complementary_bond_exchange(sticker_neighbor_list, bonds, atoms, box_dims, T,
+                                       kB=kB, bond_shift=bond_shift, bond_swap=bond_swap,
+                                       return_stats=return_stats, comm=comm)
 
 def complementary_bond_exchange(neighbor_list: dict, 
                                 bonds: np.ndarray,
                                 atoms: np.ndarray,
                                 box_dims: np.ndarray,
                                 T: float,
-                                sticker_types_A: list[int] | int,
-                                sticker_types_B: list[int] | int,
+                                sticker_types_A: list[int] | int | None = None,
+                                sticker_types_B: list[int] | int | None = None,
                                 kB: float = 1.0,
                                 K: float = 30.0,
                                 R0: float = 1.5,
@@ -825,8 +406,9 @@ def complementary_bond_exchange(neighbor_list: dict,
     """
     Evaluates Monte Carlo bond exchange dynamics for a vitrimer network across MPI processes.
 
-    This function performs reversible bond exchanges between active stickers of complementary 
-    types (Group A and Group B). It evaluates local neighborhoods to propose physically valid 
+    This function performs reversible bond exchanges between active stickers of complementary
+    types (Group A and Group B), or, if no sticker types are given, between any two stickers
+    (any-pairing mode). It evaluates local neighborhoods to propose physically valid
     3-body associative bond shifts and/or 4-body bond swaps. Proposed reactions are accepted 
     or rejected based on the Metropolis-Hastings criterion using the change in the raw FENE
     potential. This assumes LAMMPS 'special_bonds fene' (lj 0 1 1) with 'bond_style fene',
@@ -851,10 +433,13 @@ def complementary_bond_exchange(neighbor_list: dict,
         Simulation box dimensions in the form: [xlo, xhi, ylo, yhi, zlo, zhi] for periodic 
         boundary condition calculations.
     T : float
-        Current temperature of the simulation for Boltzmann probability weighting.
-    sticker_types_A : list[int] | int
-        The LAMMPS atom type(s) designated as Group A complementary stickers.
-    sticker_types_B : list[int] | int
+        Current temperature of the simulation for Boltzmann probability weighting. At T = 0
+        only moves with delta E <= 0 are accepted.
+    sticker_types_A : list[int] | int | None, optional
+        The LAMMPS atom type(s) designated as Group A complementary stickers. If both
+        sticker_types_A and sticker_types_B are None (default), any sticker may bond to any
+        other sticker. Giving only one of them raises a ValueError.
+    sticker_types_B : list[int] | int | None, optional
         The LAMMPS atom type(s) designated as Group B complementary stickers.
     kB : float, optional
         Boltzmann constant. Default is 1.0.
@@ -896,7 +481,10 @@ def complementary_bond_exchange(neighbor_list: dict,
               Counts are int, sums are float. X is 'shift' or 'swap'.
                 'n_shifts', 'n_swaps', 'total': successful reactions after conflict resolution.
                 'n_sites': neighbourhoods that proposed a trial move (one proposal each).
-                'n_options': candidate moves enumerated across all sites.
+                'n_options': candidate moves enumerated across all sites. Per bonded pair and free
+                    sticker a shift has one candidate in A/B mode and two in any-pairing mode (the
+                    free sticker may bond to either sticker of the pair); per two bonded pairs a
+                    swap has one candidate in A/B mode and two (the two re-pairings) in any-pairing mode.
                 'n_proposed_X': proposals per mechanism.
                 'n_proposed_overstretched': proposals with delta E = +inf (a new bond >= R0);
                     always rejected and also included in 'n_metropolis_rejected_X'.
@@ -916,7 +504,8 @@ def complementary_bond_exchange(neighbor_list: dict,
     Raises
     ------
     ValueError
-        If an atom identified in a linked pair violates the complementary A-B bonding rules.
+        If an atom identified in a linked pair violates the complementary A-B bonding rules, or if
+        only one of sticker_types_A and sticker_types_B is given.
     RuntimeError
         If an atom is detected to possess a valency greater than 1, indicating a corrupted 
         topology passed from the main simulation array.
@@ -924,17 +513,34 @@ def complementary_bond_exchange(neighbor_list: dict,
     # ---------------------------------------------------------
     # Input Normalization & Optimization
     # ---------------------------------------------------------
+    # Both None -> any-pairing mode (any sticker may bond to any other sticker)
+    if (sticker_types_A is None) != (sticker_types_B is None):
+        raise ValueError("Give both sticker_types_A and sticker_types_B, or neither (any-pairing mode).")
+    complementary = sticker_types_A is not None
+
     # Convert sticker types to sets for instantaneous O(1) lookups.
     # If an int is passed, wrap it in a set.
-    if isinstance(sticker_types_A, int):
-        A_set = {sticker_types_A}
-    else:
-        A_set = set(sticker_types_A)
+    def to_set(types) -> set:
+        """
+        Normalise a sticker-type argument to a set for O(1) membership tests.
 
-    if isinstance(sticker_types_B, int):
-        B_set = {sticker_types_B}
-    else:
-        B_set = set(sticker_types_B)
+        Parameters
+        ----------
+        types : list[int] | int | None
+            LAMMPS atom type(s) of one sticker group, as passed to sticker_types_A/B.
+
+        Returns
+        -------
+        set
+            The types as a set; a single int becomes a one-element set, and None
+            (any-pairing mode) an empty set.
+        """
+        if types is None:
+            return set()
+        return {types} if isinstance(types, int) else set(types)
+
+    A_set = to_set(sticker_types_A)
+    B_set = to_set(sticker_types_B)
 
     already_exchanged_atoms = set()    # Set used to prevent the same pair of atoms taking part in bond exchange more than once
     local_accepted_moves = []
@@ -960,6 +566,24 @@ def complementary_bond_exchange(neighbor_list: dict,
     all_bonded_atoms = set(bonds['atom 1']).union(set(bonds['atom 2']))
 
     def get_group(atom_id):
+        """
+        Look up which complementary group a sticker belongs to. Only used in A/B mode.
+
+        Parameters
+        ----------
+        atom_id : int
+            LAMMPS atom ID of the sticker; must be present in atoms['id'].
+
+        Returns
+        -------
+        str
+            'A' if the atom's type is in sticker_types_A, 'B' if it is in sticker_types_B.
+
+        Raises
+        ------
+        ValueError
+            If the atom's type belongs to neither group.
+        """
         idx = id_to_idx[atom_id]
         atype = atoms['type'][idx]
         if atype in A_set: 
@@ -968,6 +592,61 @@ def complementary_bond_exchange(neighbor_list: dict,
             return 'B'
         else: 
             raise ValueError(f"Atom {atom_id} type {atype} is not an A or B sticker.")
+
+    def orient(bond):
+        """
+        Order a bonded pair as (A sticker, B sticker), validating that it is complementary.
+
+        The fixed order lets the shift and swap generators build candidate moves without
+        checking the groups again. In any-pairing mode the pair is returned unchanged.
+
+        Parameters
+        ----------
+        bond : tuple[int, int]
+            Atom IDs of an existing bond, in either order.
+
+        Returns
+        -------
+        tuple[int, int]
+            The pair as (A, B) in A/B mode, otherwise `bond` as given.
+
+        Raises
+        ------
+        ValueError
+            In A/B mode, if both stickers belong to the same group (or, via get_group(),
+            if either is not an A or B sticker).
+        """
+        if not complementary:
+            return bond
+        g1, g2 = get_group(bond[0]), get_group(bond[1])
+        if g1 == g2:
+            raise ValueError(f"Bond {bond} violates complementary pairing: both stickers are of group {g1}.")
+        return bond if g1 == 'A' else (bond[1], bond[0])
+
+    def can_bond(id1, id2):
+        """
+        Check whether two stickers are allowed to form a bond under the current pairing rule.
+
+        Distances and valency are not checked here; the caller only passes free stickers or
+        stickers whose current bond is being broken by the move.
+
+        Parameters
+        ----------
+        id1, id2 : int
+            Atom IDs of the two stickers.
+
+        Returns
+        -------
+        bool
+            Always True in any-pairing mode; in A/B mode, True only if the stickers belong to
+            different groups.
+
+        Raises
+        ------
+        ValueError
+            In A/B mode, via get_group(), if either sticker is not an A or B sticker.
+        """
+        return not complementary or get_group(id1) != get_group(id2)
 
     # Loop through entries in neighbor list
     for atom_main, neighbors_data in neighbor_list.items():
@@ -1004,31 +683,19 @@ def complementary_bond_exchange(neighbor_list: dict,
         # ---------------------------------------------------------
         # 2. Evaluate all possible 3-Body Shifts
         # ---------------------------------------------------------
+        # The free sticker takes the place of one sticker of the pair: either b keeps its bond
+        # and bonds to free_s, or a does. In A/B mode exactly one of the two is allowed.
         if bond_shift and len(free_stickers) > 0:
             for bond in linked_pairs:
-                g1, g2 = get_group(bond[0]), get_group(bond[1])
-                
-                if g1 == 'A' and g2 == 'B':
-                    bound_A, bound_B = bond[0], bond[1]
-                elif g1 == 'B' and g2 == 'A':
-                    bound_A, bound_B = bond[1], bond[0]
-                else:
-                    raise ValueError(f"Bond {bond} violates complementary pairing.")
-
+                a, b = orient(bond)
                 for free_s in free_stickers:
-                    free_group = get_group(free_s)
-                    if free_group == 'A':
-                        potential_exchanges.append({
-                            'old_bonds': [(bound_A, bound_B)],
-                            'new_bonds': [(free_s, bound_B)],
-                            'involved_atoms': [bound_A, bound_B, free_s]
-                        })
-                    elif free_group == 'B':
-                        potential_exchanges.append({
-                            'old_bonds': [(bound_A, bound_B)],
-                            'new_bonds': [(bound_A, free_s)],
-                            'involved_atoms': [bound_A, bound_B, free_s]
-                        })
+                    for keeper in (b, a):
+                        if can_bond(keeper, free_s):
+                            potential_exchanges.append({
+                                'old_bonds': [(a, b)],
+                                'new_bonds': [(free_s, keeper)],
+                                'involved_atoms': [a, b, free_s]
+                            })
 
         # ---------------------------------------------------------
         # 3. Evaluate all possible 4-Body Swaps
@@ -1042,23 +709,18 @@ def complementary_bond_exchange(neighbor_list: dict,
                         f"Topology Valency Violation: Atom {shared_atom} is illegally bonded to multiple partners. "
                         f"Evaluated pairs: {bond1} and {bond2}. Stickers are restricted to a maximum of one bond."
                     )
-                
-                g1_0, g1_1 = get_group(bond1[0]), get_group(bond1[1])
-                g2_0, g2_1 = get_group(bond2[0]), get_group(bond2[1])
 
-                if g1_0 == g1_1:
-                    raise ValueError(f'Bonded stickers {g1_0} and {g1_1} are of the same atom type! This should not be allowed')
-                if g2_0 == g2_1:
-                    raise ValueError(f'Bonded stickers {g2_0} and {g2_1} are of the same atom type! This should not be allowed')
+                p, q = orient(bond1)
+                r, s = orient(bond2)
 
-                b1_A, b1_B = (bond1[0], bond1[1]) if g1_0 == 'A' else (bond1[1], bond1[0])
-                b2_A, b2_B = (bond2[0], bond2[1]) if g2_0 == 'A' else (bond2[1], bond2[0])
-
-                potential_exchanges.append({
-                    'old_bonds': [(b1_A, b1_B), (b2_A, b2_B)],
-                    'new_bonds': [(b1_A, b2_B), (b2_A, b1_B)],
-                    'involved_atoms': [b1_A, b1_B, b2_A, b2_B]
-                })
+                # The two re-pairings; in A/B mode only the first keeps every bond A-B
+                for new_bonds in (((p, s), (r, q)), ((p, r), (q, s))):
+                    if all(can_bond(*nb) for nb in new_bonds):
+                        potential_exchanges.append({
+                            'old_bonds': [(p, q), (r, s)],
+                            'new_bonds': list(new_bonds),
+                            'involved_atoms': [p, q, r, s]
+                        })
 
         # ---------------------------------------------------------
         # 4. Detailed Balance & Metropolis Evaluation
@@ -1118,6 +780,8 @@ def complementary_bond_exchange(neighbor_list: dict,
         accept = False
         if delta_E < 0:
             accept = True
+        elif T == 0:
+            accept = delta_E == 0       # No thermal activation; avoids 0/0 = nan and a divide warning
         else:
             probability = np.exp(-delta_E / (kB * T))
             if random.uniform(0, 1) < probability:
