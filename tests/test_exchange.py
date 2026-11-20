@@ -5,6 +5,7 @@ Run serially with `pytest tests/test_exchange.py` and in parallel with
 number of ranks; the cross-rank conflict test is skipped on a single rank.
 """
 import random
+import warnings
 
 import numpy as np
 import pytest
@@ -275,3 +276,22 @@ def test_cross_rank_conflict_is_counted():
     assert stats['n_shifts'] == 1
     assert deleted == {1: 2} and created == {2: 3}
     assert_identities(stats)
+
+
+def test_zero_temperature_has_no_warnings_and_rejects_uphill():
+    spec, pairs, neigh = shift_site(0, (5.0, 5.0, 5.0), new_bond=1.3, old_bond=0.9)
+    neigh = neigh if COMM.Get_rank() == 0 else {}
+    with warnings.catch_warnings():
+        warnings.simplefilter('error')              # A divide-by-zero RuntimeWarning would fail here
+        deleted, _, stats = run(neigh, make_bonds(pairs), make_atoms(spec), T=0.0)
+    assert deleted == {} and stats['n_metropolis_rejected_shift'] == 1
+
+
+def test_zero_temperature_accepts_zero_delta_e():
+    spec, pairs, neigh = shift_site(0, (5.0, 5.0, 5.0), new_bond=1.3, old_bond=1.3)
+    neigh = neigh if COMM.Get_rank() == 0 else {}
+    with warnings.catch_warnings():
+        warnings.simplefilter('error')
+        deleted, created, stats = run(neigh, make_bonds(pairs), make_atoms(spec), T=0.0)
+    assert stats['sum_dE_proposed'] == pytest.approx(0.0, abs=1e-9)
+    assert deleted == {1: 2} and created == {2: 3}

@@ -1,5 +1,9 @@
-"""Regression tests for evaluate_bond_exchange: moves must be applied atomically so that
-every sticker keeps at most one crosslink, and non-finite energy changes must be rejected.
+"""Tests for complementary_bond_exchange in any-pairing mode (no sticker types), which replaces
+the deprecated evaluate_bond_exchange: moves must be applied atomically so that every sticker
+keeps at most one crosslink, and non-finite energy changes must be rejected.
+
+The trial move is drawn at random from all candidates, so the fixtures are built symmetrically:
+every candidate of a site has the same energy change, and the tests accept any of them.
 
 Run serially with `pytest tests/test_evaluate_exchange.py` and in parallel with
 `mpirun -np 4 python -m pytest tests/test_evaluate_exchange.py`. Every test is valid on any
@@ -13,7 +17,7 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
-from MC_exchange import evaluate_bond_exchange
+from MC_exchange import complementary_bond_exchange, evaluate_bond_exchange
 
 COMM = MPI.COMM_WORLD
 BOX = np.array([0.0, 50.0, 0.0, 50.0, 0.0, 50.0])
@@ -44,7 +48,7 @@ def run(neigh, bonds, atoms, T=1.0, seed=0, box=BOX, **kwargs):
     random.seed(seed)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
-        return evaluate_bond_exchange(neigh, bonds, atoms, box, T=T, **kwargs)
+        return complementary_bond_exchange(neigh, bonds, atoms, box, T=T, **kwargs)
 
 
 def apply(pairs: list, deleted: dict, created: dict) -> set:
@@ -68,13 +72,25 @@ def assert_valid_exchange(pairs: list, deleted: dict, created: dict):
     assert len(valency) == len(bonded_before), 'number of crosslinked stickers changed'
 
 
+SWAP_CREATED = ({1: 3, 2: 4}, {1: 4, 2: 3})     # The two re-pairings of bonds 1-2 and 3-4
+
+
 def swap_site(offset: int, origin: tuple):
-    """Two stretched bonds (o+1)-(o+2) and (o+3)-(o+4); (o+1)-(o+3) and (o+2)-(o+4) are short,
-    so the swap is strongly downhill and always accepted."""
+    """Two stretched bonds (o+1)-(o+2) and (o+3)-(o+4), 1.3 long, on opposite edges of a
+    tetrahedron whose four other edges are 1.0 long. Both re-pairings are equally and strongly
+    downhill, so the swap is always accepted."""
     x, y, z = origin
     a, b, c, d = offset + 1, offset + 2, offset + 3, offset + 4
-    spec = {a: (x, y, z), b: (x, y + 1.3, z), c: (x + 1.0, y, z), d: (x + 1.0, y + 1.3, z)}
+    w = np.sqrt(1.0 - 2 * 0.65 ** 2)
+    spec = {a: (x, y, z), b: (x + 1.3, y, z),
+            c: (x + 0.65, y - 0.65, z + w), d: (x + 0.65, y + 0.65, z + w)}
     return spec, [(a, b), (c, d)], neighbours(a, [b, c, d])
+
+
+def apex(p1: tuple, p2: tuple, r: float, side: float = 1.0) -> tuple:
+    """Point at distance r from both p1 and p2, which are separated along y (side picks +/- z)."""
+    half = (p2[1] - p1[1]) / 2
+    return (p1[0], p1[1] + half, p1[2] + side * np.sqrt(r ** 2 - half ** 2))
 
 
 def random_system(n_stickers=600, box=10.0, bonded_fraction=0.6, rc=1.12, seed=1):
@@ -114,7 +130,7 @@ def test_downhill_swap_is_applied_completely():
     deleted, created = run(neigh, make_bonds(pairs), make_atoms(spec), bond_shift=False)
 
     assert deleted == {1: 2, 3: 4}
-    assert created == {1: 3, 2: 4}
+    assert created in SWAP_CREATED
     assert_valid_exchange(pairs, deleted, created)
 
 
@@ -136,13 +152,13 @@ def test_cross_rank_conflict_rejects_whole_swap():
     # Rank 0 accepts a shift that breaks bond 1-2; rank 1 accepts a swap of 1-2 and 3-4.
     # Root keeps rank 0's shift and must drop the entire swap, leaving bond 3-4 untouched.
     spec, pairs, _ = swap_site(0, (5.0, 5.0, 5.0))
-    spec[5] = (5.0, 6.3, 5.9)       # Free sticker 0.9 from atom 2: downhill shift 1-2 -> 2-5
+    spec[5] = (5.65, 5.0, 5.0 - np.sqrt(0.81 - 0.65 ** 2))  # Free sticker 0.9 from atoms 1 and 2: downhill shift
     rank = COMM.Get_rank()
     neigh = {0: neighbours(1, [2, 5]), 1: neighbours(1, [2, 3, 4])}.get(rank, {})
     deleted, created = run(neigh, make_bonds(pairs), make_atoms(spec), seed=rank)
 
     assert deleted == {1: 2}
-    assert created == {2: 5}
+    assert created in ({2: 5}, {1: 5})
     assert_valid_exchange(pairs, deleted, created)
 
 
@@ -187,26 +203,33 @@ def test_nan_shift_is_rejected():
         assert deleted == {} and created == {}
 
 
+# Bond 1-2 is 1.6 (>= R0) and free sticker 3 is 0.9 from both, so both candidates are finite - inf
+MINUS_INF_SPEC = {1: (5.0, 5.0, 5.0), 2: (5.0, 6.6, 5.0)}
+MINUS_INF_SPEC[3] = apex(MINUS_INF_SPEC[1], MINUS_INF_SPEC[2], 0.9)
+SHIFT_CREATED = ({2: 3}, {1: 3})                # Free sticker 3 bonding to 2 or to 1
+
+
 def test_overstretched_old_bond_relaxing_to_finite_is_accepted():
     # delta U = finite - inf = -inf: relaxing an overstretched bond is downhill and accepted
-    spec = {1: (5.0, 5.0, 5.0), 2: (5.0, 6.6, 5.0), 3: (5.0, 7.5, 5.0)}
+    spec = MINUS_INF_SPEC
     neigh = neighbours(1, [2, 3]) if COMM.Get_rank() == 0 else {}
     deleted, created = run(neigh, make_bonds([(1, 2)]), make_atoms(spec), T=1e-6,
                            bond_swap=False)
-    assert deleted == {1: 2} and created == {2: 3}
+    assert deleted == {1: 2} and created in SHIFT_CREATED
 
 
 # -------------------- Zero temperature --------------------
 
 def shift_site(offset: int, origin: tuple, new_bond: float = 0.9, old_bond: float = 1.3):
-    """One shift-only site: (o+1)-(o+2) bonded, free (o+3) at new_bond from (o+2) and >= R0 from (o+1).
+    """One shift-only site: (o+1)-(o+2) bonded, free (o+3) at new_bond from both (o+1) and (o+2).
 
-    The only candidate move is (o+1, o+2) -> (o+2, o+3), with
+    Both candidate moves, (o+1, o+2) -> (o+2, o+3) and -> (o+1, o+3), have
     delta U = FENE(new_bond) - FENE(old_bond).
     """
     x, y, z = origin
     a, b, c = offset + 1, offset + 2, offset + 3
-    spec = {a: (x, y, z), b: (x, y + old_bond, z), c: (x, y + old_bond, z + new_bond)}
+    spec = {a: (x, y, z), b: (x, y + old_bond, z)}
+    spec[c] = apex(spec[a], spec[b], new_bond)
     return spec, [(a, b)], neighbours(a, [b, c])
 
 
@@ -214,12 +237,12 @@ def test_downhill_move_is_accepted_at_zero_temperature():
     spec, pairs, neigh = shift_site(0, (5.0, 5.0, 5.0))
     neigh = neigh if COMM.Get_rank() == 0 else {}
     deleted, created = run(neigh, make_bonds(pairs), make_atoms(spec), T=0.0, bond_swap=False)
-    assert deleted == {1: 2} and created == {2: 3}
+    assert deleted == {1: 2} and created in SHIFT_CREATED
 
     spec, pairs, neigh = swap_site(0, (5.0, 5.0, 5.0))
     neigh = neigh if COMM.Get_rank() == 0 else {}
     deleted, created = run(neigh, make_bonds(pairs), make_atoms(spec), T=0.0, bond_shift=False)
-    assert deleted == {1: 2, 3: 4} and created == {1: 3, 2: 4}
+    assert deleted == {1: 2, 3: 4} and created in SWAP_CREATED
 
 
 def test_uphill_move_is_rejected_at_zero_temperature():
@@ -278,7 +301,7 @@ def test_shift_counters():
     deleted, created, stats = run_stats(neigh, make_bonds(pairs), make_atoms(spec), bond_swap=False)
 
     dE = fene(0.9) - fene(1.3)
-    assert deleted == {1: 2} and created == {2: 3}
+    assert deleted == {1: 2} and created in SHIFT_CREATED
     assert stats['n_sites'] == stats['n_proposed_shift'] == stats['n_accepted_local_shift'] == 1
     assert stats['n_shifts'] == stats['total'] == 1
     assert stats['n_options'] == 2          # Free sticker 3 bonding to either 1 or 2
@@ -297,14 +320,6 @@ def test_swap_counters():
     assert stats['n_options'] == 2          # The two possible re-pairings
     assert stats['sum_dE_accepted'] < 0
     assert_identities(stats)
-
-
-def test_alpha_scales_summed_delta_u():
-    spec, pairs, neigh = shift_site(0, (5.0, 5.0, 5.0))
-    neigh = neigh if COMM.Get_rank() == 0 else {}
-    _, _, s1 = run_stats(neigh, make_bonds(pairs), make_atoms(spec), bond_swap=False)
-    _, _, s2 = run_stats(neigh, make_bonds(pairs), make_atoms(spec), bond_swap=False, alpha=2.0)
-    assert s2['sum_dE_proposed'] == pytest.approx(2.0 * s1['sum_dE_proposed'])
 
 
 def test_overstretched_proposal_is_counted_and_sums_stay_finite():
@@ -331,7 +346,7 @@ def test_nan_proposal_is_rejected_and_sums_stay_finite():
 
 
 def test_minus_inf_proposal_is_accepted_and_left_out_of_sums():
-    spec = {1: (5.0, 5.0, 5.0), 2: (5.0, 6.6, 5.0), 3: (5.0, 7.5, 5.0)}
+    spec = MINUS_INF_SPEC
     neigh = neighbours(1, [2, 3]) if COMM.Get_rank() == 0 else {}
     _, _, stats = run_stats(neigh, make_bonds([(1, 2)]), make_atoms(spec), bond_swap=False)
 
@@ -343,7 +358,7 @@ def test_minus_inf_proposal_is_accepted_and_left_out_of_sums():
 def test_quarantined_site_is_counted():
     # Site 1 shifts bond 1-2 to 2-3; the next site is centred on the already reacted atom 2
     spec, pairs, neigh = shift_site(0, (5.0, 5.0, 5.0))
-    spec[4] = (5.0, 6.3, 4.1)
+    spec[4] = apex(spec[2], (5.0, 7.6, 5.0), 0.9, side=-1.0)    # Free, 0.9 from atom 2
     neigh = {**neigh, 2: {3: 1.0, 4: 1.0}} if COMM.Get_rank() == 0 else {}
     _, _, stats = run_stats(neigh, make_bonds(pairs), make_atoms(spec), bond_swap=False)
 
@@ -382,7 +397,7 @@ def test_counts_independent_of_rank_count_for_disjoint_sites():
 def test_cross_rank_conflict_is_counted():
     # Same set-up as test_cross_rank_conflict_rejects_whole_swap
     spec, pairs, _ = swap_site(0, (5.0, 5.0, 5.0))
-    spec[5] = (5.0, 6.3, 5.9)
+    spec[5] = (5.65, 5.0, 5.0 - np.sqrt(0.81 - 0.65 ** 2))
     rank = COMM.Get_rank()
     neigh = {0: neighbours(1, [2, 5]), 1: neighbours(1, [2, 3, 4])}.get(rank, {})
     _, _, stats = run_stats(neigh, make_bonds(pairs), make_atoms(spec), seed=rank)
@@ -391,3 +406,32 @@ def test_cross_rank_conflict_is_counted():
     assert stats['n_accepted_local_swap'] == stats['n_conflict_rejected_swap'] == 1
     assert stats['n_swaps'] == 0
     assert_identities(stats)
+
+
+# -------------------- Deprecated wrapper and argument checks --------------------
+
+def test_evaluate_bond_exchange_warns_and_forwards():
+    neigh, pairs, atoms, box = random_system(seed=5)
+    expected = run_stats(neigh, make_bonds(pairs), atoms, seed=COMM.Get_rank(), box=box)
+
+    random.seed(COMM.Get_rank())
+    with pytest.warns(DeprecationWarning, match='evaluate_bond_exchange'):
+        result = evaluate_bond_exchange(neigh, make_bonds(pairs), atoms, box, T=1.0, return_stats=True)
+    assert result == expected
+
+
+def test_evaluate_bond_exchange_warns_on_alpha_and_p_coeff():
+    spec, pairs, neigh = shift_site(0, (5.0, 5.0, 5.0))
+    neigh = neigh if COMM.Get_rank() == 0 else {}
+    with pytest.warns(DeprecationWarning) as record:
+        evaluate_bond_exchange(neigh, make_bonds(pairs), make_atoms(spec), BOX, T=1.0, alpha=2.0)
+    messages = [str(w.message) for w in record]
+    assert any('deprecated' in m for m in messages)
+    assert any('alpha and P_coeff' in m for m in messages)
+
+
+@pytest.mark.parametrize('types', [{'sticker_types_A': 1}, {'sticker_types_B': 1}])
+def test_only_one_sticker_type_group_raises(types):
+    spec, pairs, neigh = shift_site(0, (5.0, 5.0, 5.0))
+    with pytest.raises(ValueError, match='or neither'):
+        complementary_bond_exchange(neigh, make_bonds(pairs), make_atoms(spec), BOX, T=1.0, **types)
